@@ -7,10 +7,16 @@ import "core:strings"
 import "core:sys/windows"
 
 foreign import psapi "system:Psapi.lib"
+foreign import kernel32 "system:Kernel32.lib"
 
 @(default_calling_convention="system")
 foreign psapi {
 	GetProcessMemoryInfo :: proc(process: windows.HANDLE, counters: rawptr, cb: windows.DWORD) -> windows.BOOL ---
+}
+
+@(default_calling_convention="system")
+foreign kernel32 {
+	GetSystemTimes :: proc(idle_time, kernel_time, user_time: ^windows.FILETIME) -> windows.BOOL ---
 }
 
 PROCESS_MEMORY_COUNTERS_EX :: struct {
@@ -29,6 +35,35 @@ PROCESS_MEMORY_COUNTERS_EX :: struct {
 
 filetime_value :: proc(value: windows.FILETIME) -> u64 {
 	return u64(value.dwLowDateTime) | (u64(value.dwHighDateTime) << 32)
+}
+
+process_monitor_system_cpu :: proc(app: ^Process_Monitor) -> (percent: f32, ok: bool) {
+	idle, kernel, user: windows.FILETIME
+	if !GetSystemTimes(&idle, &kernel, &user) { return }
+	now_idle := filetime_value(idle)
+	now_kernel := filetime_value(kernel)
+	now_user := filetime_value(user)
+	if app.system_times_valid {
+		if now_idle >= app.last_system_idle && now_kernel >= app.last_system_kernel && now_user >= app.last_system_user {
+			idle_delta := now_idle - app.last_system_idle
+			total_now := now_kernel + now_user
+			total_before := app.last_system_kernel + app.last_system_user
+			if total_now >= total_before {
+				total_delta := total_now - total_before
+				if total_delta > 0 && total_delta >= idle_delta {
+					percent = f32(100.0 * f64(total_delta-idle_delta) / f64(total_delta))
+					if percent < 0 { percent = 0 }
+					if percent > 100 { percent = 100 }
+					ok = true
+				}
+			}
+		}
+	}
+	app.last_system_idle = now_idle
+	app.last_system_kernel = now_kernel
+	app.last_system_user = now_user
+	app.system_times_valid = true
+	return
 }
 
 qpc_value :: proc() -> u64 {
@@ -89,7 +124,8 @@ process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
 				}
 				counters := PROCESS_MEMORY_COUNTERS_EX{cb=windows.DWORD(size_of(PROCESS_MEMORY_COUNTERS_EX))}
 				if GetProcessMemoryInfo(handle, &counters, windows.DWORD(size_of(counters))) {
-					row.memory_bytes = u64(counters.WorkingSetSize)
+					row.working_set_bytes = u64(counters.WorkingSetSize)
+					row.private_bytes = u64(counters.PrivateUsage)
 				}
 				append(&app.rows, row)
 				next_cpu[key] = cpu_time
@@ -105,7 +141,11 @@ process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
 	app.previous_cpu = next_cpu
 	app.process_revision += 1
 	app.sample_count += 1
-	app.cpu_percent = total_cpu
+	if system_cpu, system_ok := process_monitor_system_cpu(app); system_ok {
+		app.cpu_percent = system_cpu
+	} else {
+		app.cpu_percent = total_cpu
+	}
 	if app.cpu_percent > 100 { app.cpu_percent = 100 }
 	memory := windows.MEMORYSTATUSEX{dwLength=size_of(windows.MEMORYSTATUSEX)}
 	if windows.GlobalMemoryStatusEx(&memory) {

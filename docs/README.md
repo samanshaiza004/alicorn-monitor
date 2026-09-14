@@ -33,6 +33,11 @@ samples, visible rows, graph updates, and Windows process-query failures. The
 last value is expected to be nonzero on many systems because protected
 processes can reject limited query access.
 
+The table reports `WS` (working set) and `PRIVATE` (private committed memory)
+separately. A large working set can include shared pages from SDL, the Odin
+runtime, graphics drivers, and loaded fonts; it is not equivalent to private
+application allocation.
+
 ## Deliberate limits
 
 This is a Windows-first v0. It does not terminate processes, show a process

@@ -14,6 +14,15 @@ if ([IO.Path]::IsPathRooted($Odin)) {
 }
 
 New-Item -ItemType Directory -Force -Path 'out' | Out-Null
+$outputPath = Join-Path (Get-Location) 'out\alicorn-monitor.exe'
+if (Test-Path -LiteralPath $outputPath -PathType Leaf) {
+    try {
+        $probe = [IO.File]::Open($outputPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $probe.Dispose()
+    } catch {
+        throw "The monitor executable is in use: $outputPath. Close the running Alicorn Monitor window and retry."
+    }
+}
 & $Odin build . -out:out\alicorn-monitor.exe
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
