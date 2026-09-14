@@ -1,0 +1,3 @@
+[submodule "vendor/alicorn"]
+	path = vendor/alicorn
+	url = https://github.com/samanshaiza004/alicorn.git
