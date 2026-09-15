@@ -63,6 +63,7 @@ Process_Monitor :: struct {
 	last_system_idle:   u64,
 	last_system_kernel: u64,
 	last_system_user:   u64,
+	last_system_nice:   u64,
 	process_revision:  u64,
 	graph_revision:    u64,
 	scroll_y:          f32,
@@ -73,10 +74,16 @@ Process_Monitor :: struct {
 	selected:          Process_Key,
 	has_selected:      bool,
 	paused:            bool,
+	// Temporary diagnostics for isolating the reported macOS interaction stall.
+	disable_sampler:   bool,
+	disable_surface:   bool,
 	sample_count:      u64,
 	query_failures:    int,
+	input_debug:       bool,
+	last_pointer_events: u64,
 	qpc_frequency:     u64,
 	last_qpc:          u64,
+	sample_tick:       time.Tick,
 	tick_count:        u64,
 	last_tick_time:    time.Time,
 	tick_time_valid:   bool,
@@ -206,6 +213,27 @@ format_bytes :: proc(value: u64) -> string {
 	return fmt.tprintf("%d B", value)
 }
 
+process_memory_primary_label :: proc() -> string {
+	when ODIN_OS == .Darwin {
+		return "RESIDENT"
+	}
+	return "WS"
+}
+
+process_memory_secondary_label :: proc() -> string {
+	when ODIN_OS == .Darwin {
+		return "FOOTPRINT"
+	}
+	return "PRIVATE"
+}
+
+system_memory_label :: proc() -> string {
+	when ODIN_OS == .Darwin {
+		return "System memory (non-free)"
+	}
+	return "System memory"
+}
+
 process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logical_width, logical_height: f32, dpi_scale: f32) -> Monitor_Nodes {
 	ui, build := alicorn.begin_frame(rt)
 	if !build { return Monitor_Nodes{} }
@@ -216,7 +244,7 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	header_style := alicorn.Layout_Style{.Row, -1, 28, 0, -1, 0, -1, 0, 0, 8, .Stretch, false}
 	alicorn.container_begin(&ui, .Container, label="system-summary", style=header_style, color=alicorn.Color{0.08, 0.14, 0.24, 1})
 	alicorn.text(&ui, fmt.tprintf("CPU %.1f%%", app.cpu_percent), style=alicorn.Layout_Style{.Row, SUMMARY_CPU_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, fmt.tprintf("System memory %s / %s", format_bytes(app.memory_used), format_bytes(app.memory_total)), style=alicorn.Layout_Style{.Row, SUMMARY_MEMORY_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, fmt.tprintf("%s %s / %s", system_memory_label(), format_bytes(app.memory_used), format_bytes(app.memory_total)), style=alicorn.Layout_Style{.Row, SUMMARY_MEMORY_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.text(&ui, fmt.tprintf("Processes %d", len(app.rows)), style=alicorn.Layout_Style{.Row, SUMMARY_PROCESSES_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.text(&ui, fmt.tprintf("Host ticks %.1f Hz", app.tick_hz), style=alicorn.Layout_Style{.Row, 170, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.container_end(&ui)
@@ -271,8 +299,8 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	alicorn.text(&ui, "PID", style=alicorn.Layout_Style{.Row, TABLE_PID_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.text(&ui, "PROCESS", style=alicorn.Layout_Style{.Row, -1, 24, 0, -1, 0, -1, 1, 0, 0, .Stretch, false})
 	alicorn.text(&ui, "CPU", style=alicorn.Layout_Style{.Row, TABLE_CPU_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "WS", style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "PRIVATE", style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, process_memory_primary_label(), style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, process_memory_secondary_label(), style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.container_end(&ui)
 	row_height: f32 = 24
 	list_height := logical_height - 340
@@ -368,6 +396,10 @@ process_monitor_on_scroll :: proc(state: rawptr, rt: ^alicorn.Runtime, event: al
 
 process_monitor_on_tick :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	app := cast(^Process_Monitor)state
+	if app.input_debug && rt.stats.pointer_events != app.last_pointer_events {
+		fmt.println("monitor_input", "pointer_events", rt.stats.pointer_events, "focused", rt.focused, "selected", rt.selected)
+		app.last_pointer_events = rt.stats.pointer_events
+	}
 	app.tick_count += 1
 	now := time.now()
 	if app.tick_time_valid {
@@ -384,13 +416,14 @@ process_monitor_on_tick :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	app.last_tick_time = now
 	app.tick_time_valid = true
 	if app.paused { return }
+	if app.disable_sampler { return }
 	// The host ticks at display cadence, but process data and graph history only
 	// change when a new sample is available. This keeps the monitor's GPU work
 	// proportional to information changes rather than repainting duplicates.
 	if app.sample_count == 0 || app.tick_count % 15 == 0 {
 		if process_monitor_sample(app) {
 			process_monitor_graph_tick(app)
-			if app.surface_node != 0 {
+			if app.surface_node != 0 && !app.disable_surface {
 				_ = alicorn.gpu_surface_update(rt, app.surface_node, app.graph_revision, app.cpu_history[:])
 			}
 			alicorn.invalidate_root(rt, "process monitor sample")
