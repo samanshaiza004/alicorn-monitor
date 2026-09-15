@@ -4,7 +4,8 @@ param(
     [switch]$Diagnostics,
     [int]$CaptureAfter = 2,
     [string]$CaptureDir = 'out\diagnostics',
-    [switch]$InputDebug
+    [switch]$InputDebug,
+    [switch]$DebugBounds
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,5 +49,6 @@ if ($Diagnostics) {
     $args += "--capture-dir=$CaptureDir"
 }
 if ($InputDebug) { $args += '--input-debug' }
+if ($DebugBounds) { $args += '--debug-bounds' }
 & .\out\alicorn-monitor.exe @args
 exit $LASTEXITCODE
