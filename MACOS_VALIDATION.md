@@ -11,7 +11,7 @@ passing build is not treated as proof of native behavior.
 | Monitor starting commit | `c6746cec03418f1ef763d99f97235d7463f6e189` |
 | Monitor branch | `port/macos-monitor-c6746ce` |
 | Pinned Alicorn starting commit | `3f1fcd76a8c1518bb6ba751f5bbde6da31d8880e` |
-| Validated Alicorn commit | `96e0a001fd3a6f363f34ecbf402d189810b67596` |
+| Validated Alicorn commit | `e460a0d8e95ce76ff60edce3b72861c8be42617a` |
 | Host | MacBook Air 10,1, Apple M1, 8 cores, 8 GB |
 | macOS | 26.6.2 (25G83) |
 | Architecture | `arm64` / Apple Silicon |
@@ -43,10 +43,11 @@ window_metrics resize logical 640 x 480 pixels 1280 x 960 pixel_density 2 displa
 SDL3/SDL_GPU retained compositor: PASS resize_iterations 300 submissions 303 retired 303 display_commands 6 max_frames_in_flight 3 fence_waits 303 fence_query_before_wait_true 301 fence_query_after_wait_true 0 logical_resize_events 300 pixel_resize_events 301 scale_events 1 text_input_events 1 composition_events 1 text_shape_calls 305 text_glyph_cache_hits 12015 text_glyph_cache_misses 63 text_rasterizations 63 text_atlas_pages 1 text_quads 36 text_atlas_full_page_uploads 2 text_atlas_upload_bytes 8388608 text_readback_non_background 881 text_input_boundary focus-start-caret-area-stop pointer_adapter logical coordinates unchanged logical_to_physical compositor boundary only
 ```
 
-The Alicorn changes in `8de9a8e` and `96e0a00` make the public `Run` host
-print/assert the selected driver on Darwin and explicitly foreground/raise a
-bare SDL window for keyboard and mouse input. They do not expose renderer
-internals to the monitor.
+The dedicated Alicorn macOS branch was fast-forwarded to fetched `main` commit
+`e460a0d`. That history includes the public Metal assertion/selection, macOS
+activation work, the current native diagnostics seam, the latest runtime
+input/presentation changes, and the bounds-toggle wake fix. It does not expose
+renderer internals to the monitor.
 
 ## Monitor build and smoke
 
@@ -64,12 +65,13 @@ The new Unix path is:
 ALICORN_ODIN=/Users/keina/Documents/odin-macos-arm64-nightly+2026-09-01/odin ./tools/run.sh --smoke
 ```
 
-The validated run completed successfully:
+The validated run from the merged latest-main executable completed
+successfully:
 
 ```text
 gpu_driver_requested metal gpu_driver_selected metal
-SDL application PASS submissions 3 retired 3 max_frames_in_flight 3 wall_ns 3004397000 logical_resize_events 0 pixel_resize_events 1 scale_events 1 text_input_events 0 composition_events 0
-process_monitor PASS samples 12 rows 364 cpu_percent 30.1 memory_used 7.9 GB memory_total 8.0 GB identity_keys 364 surface_updates 12 surface_frames 12 query_failures 2306
+SDL application PASS submissions 2 retired 2 max_frames_in_flight 2 wall_ns 3004237000 logical_resize_events 0 pixel_resize_events 1 scale_events 1 text_input_events 0 composition_events 0 frame_p95_ns 1342000 gpu_encode_ns 56116000 gpu_submit_ns 103000 fence_wait_ns 7000
+process_monitor PASS samples 11 rows 383 cpu_percent 33.3 memory_used 7.8 GB memory_total 8.0 GB identity_keys 383 surface_updates 11 surface_frames 11 query_failures 2277
 ```
 
 This proves that the same application host creates a Retina window, selects
@@ -123,10 +125,33 @@ Metric meanings:
 | Darwin built the intentional empty sampler | The fallback was `!windows`, so it also compiled on macOS | Added `process_darwin.odin` and excluded Darwin from `process_other.odin` | Monitor builds and samples 364 rows on this Mac. |
 | macOS process rows had no native metrics | No Darwin enumeration or rusage implementation existed | Added libproc-backed enumeration, start identity, CPU deltas, resident/footprint metrics, system CPU ticks, and host VM memory | Smoke reported nonzero rows, CPU, memory, stable key count, and repeated samples. |
 | Darwin labels would have claimed Windows semantics | Shared UI used `WS` and `PRIVATE` unconditionally | Darwin displays `RESIDENT` and `FOOTPRINT`; system memory is labeled non-free | Compiled/run on the physical Retina Mac. |
-| Public app proof did not report selected SDL GPU driver | `Run` requested Metal but did not assert or print the selected driver | Alicorn commit `8de9a8e` verifies `metal` in the public host on Darwin | Monitor output reports `gpu_driver_requested metal gpu_driver_selected metal`. |
-| The visible bare SDL window became non-interactive on the physical Mac | The window could render and sample while macOS input ownership was still ambiguous | Alicorn commit `96e0a00` sets the macOS foreground/activation hints before SDL initialization and raises the created window | The retest still reproduced the symptom; raw SDL event delivery remains under investigation. |
+| Public app proof did not report selected SDL GPU driver | `Run` requested Metal but did not assert or print the selected driver | Alicorn history through `e460a0d` verifies `metal` in the public host on Darwin | Monitor output reports `gpu_driver_requested metal gpu_driver_selected metal`. |
+| The visible bare SDL window became non-interactive on the physical Mac | The window could render and sample while macOS input ownership was still ambiguous | Alicorn history retains the activation hints and raises the window before and after host initialization | The retest still reproduced the symptom; a main-thread sample showed SDL's Cocoa event-pump stack, so this remains an Alicorn/SDL host investigation rather than a sampler workaround. |
 | First sampler smoke aborted with an invalid free | A PID slice allocated with `context.temp_allocator` was deleted through the default allocator | Explicitly delete the temporary PID slice with `context.temp_allocator` | LLDB no longer observes the malloc abort; smoke exits 0. |
 | macOS had no native launcher | Only the PowerShell runner existed | Added executable `tools/run.sh`; Windows `tools/run.ps1` remains unchanged | `./tools/run.sh --smoke` passes. |
+
+## Latest native diagnostics
+
+The new Alicorn diagnostics tool is useful for this failure. Running the
+merged executable with `--diagnostics --capture-after=0
+--capture-dir=/tmp/alicorn-monitor-diagnostics-latest` produced valid
+`diagnostics.json`, `inspector.txt`, and `screenshot.ppm`. The capture recorded:
+
+```text
+gpu_driver metal
+logical 960 x 720; physical 1920 x 1440; density 2; display scale 2
+retained nodes 144; display commands 228; focused node = filter field
+surface updates 1; surface frames consumed 1
+```
+
+The inspector showed the filter field with the expected bounds and focus, and
+the sort buttons and process rows as retained hit-testable nodes. This makes
+the diagnostics tool useful for separating retained-layout/input-state bugs
+from host event delivery. It does not yet capture a later idle snapshot when
+the macOS event pump stops progressing: a timed one-second capture did not
+fire without another event. A prior `sample` of the same host path showed the
+main thread in `SDL_WaitEventTimeoutNS` / `Cocoa_PumpEventsUntilDate`. That is
+the current highest-value lead for the freeze.
 
 ## Retina, lifecycle, text, and thread observations
 
@@ -159,8 +184,8 @@ tick callback; no worker thread or direct runtime mutation was introduced.
   not a passing interaction result.
 - Real macOS IME composition and OS candidate UI positioning remain unproven.
 - No separate 30–60 second performance sample or allocator telemetry was
-  added. The bounded smoke showed 12 samples, 12 graph updates, and bounded
-  three-frame GPU retirement.
+  added. The latest bounded smoke showed 11 samples, 11 graph updates, and
+  bounded two-frame GPU retirement.
 - libproc is private/compatibility-sensitive on macOS.
 
 ## Recommendation
