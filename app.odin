@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:mem"
 import "core:strings"
 import "core:time"
 import alicorn "vendor/alicorn/runtime"
@@ -51,6 +52,12 @@ SUMMARY_MEMORY_WIDTH    :: 300
 SUMMARY_PROCESSES_WIDTH :: 170
 
 Process_Monitor :: struct {
+	// Application-owned persistent storage and per-callback scratch storage
+	// are captured together so monitor callbacks do not depend on whichever
+	// ambient allocator happens to be active at a later host event.
+	persistent_allocator: mem.Allocator,
+	scratch_arena:        ^mem.Dynamic_Arena,
+	scratch_allocator:    mem.Allocator,
 	filter:            string,
 	rows:              [dynamic]Process_Record,
 	visible:           [dynamic]int,
@@ -91,11 +98,14 @@ Monitor_Nodes :: struct {
 }
 
 process_monitor_new :: proc() -> Process_Monitor {
-	app := Process_Monitor{}
-	app.rows = make([dynamic]Process_Record, 0, 256)
-	app.visible = make([dynamic]int, 0, 256)
-	app.previous_cpu = make(map[Process_Key]u64)
-	app.cpu_history = make([dynamic]f32, 0, 512)
+	app := Process_Monitor{persistent_allocator = context.allocator}
+	app.scratch_arena = new(mem.Dynamic_Arena, allocator=app.persistent_allocator)
+	mem.dynamic_arena_init(app.scratch_arena, block_allocator=app.persistent_allocator, array_allocator=app.persistent_allocator)
+	app.scratch_allocator = mem.dynamic_arena_allocator(app.scratch_arena)
+	app.rows = make([dynamic]Process_Record, 0, 256, app.persistent_allocator)
+	app.visible = make([dynamic]int, 0, 256, app.persistent_allocator)
+	app.previous_cpu = make(map[Process_Key]u64, app.persistent_allocator)
+	app.cpu_history = make([dynamic]f32, 0, 512, app.persistent_allocator)
 	for i := 0; i < 512; i += 1 { append(&app.cpu_history, 0) }
 	app.sort = .CPU
 	app.sort_descending = true
@@ -103,16 +113,24 @@ process_monitor_new :: proc() -> Process_Monitor {
 }
 
 process_monitor_destroy :: proc(app: ^Process_Monitor) {
-	if len(app.filter) > 0 { delete(app.filter) }
+	if len(app.filter) > 0 { delete(app.filter, app.persistent_allocator) }
 	for row in app.rows {
-		if len(row.identity) > 0 { delete(row.identity) }
-		if len(row.name) > 0 { delete(row.name) }
+		if len(row.identity) > 0 { delete(row.identity, app.persistent_allocator) }
+		if len(row.name) > 0 { delete(row.name, app.persistent_allocator) }
 	}
 	delete(app.rows)
 	delete(app.visible)
 	delete(app.previous_cpu)
 	delete(app.cpu_history)
+	if app.scratch_arena != nil {
+		mem.dynamic_arena_destroy(app.scratch_arena)
+		free(app.scratch_arena, allocator=app.persistent_allocator)
+	}
 	app^ = {}
+}
+
+process_monitor_scratch_reset :: proc(app: ^Process_Monitor) {
+	if app.scratch_arena != nil { mem.dynamic_arena_reset(app.scratch_arena) }
 }
 
 // Graph history advances only when a fresh process sample is available. The
@@ -283,7 +301,7 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	app.scroll_y = metrics.offset_y
 	first, last := metrics.first, metrics.last
 	alicorn.container_begin(&ui, .Container, label="process-table-body", style=alicorn.Layout_Style{.Row, table_body_width, list_height, 0, -1, 0, -1, 0, 6, 0, .Stretch, true})
-	alicorn.container_begin(&ui, .Virtual_List, label="process-list", style=alicorn.Layout_Style{.Column, table_list_width, list_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, scroll_offset_y=metrics.offset_y)
+	alicorn.container_begin(&ui, .Virtual_List, label="process-list", style=alicorn.Layout_Style{.Column, table_list_width, list_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, scroll_offset_y=metrics.offset_y, layout_scroll_offset_y=metrics.leading_offset_y)
 	for position := first; position < last; position += 1 {
 		row := app.rows[app.visible[position]]
 		if !alicorn.component_begin(&ui, alicorn.key_pair(u64(row.key.pid), row.key.creation_time)) { continue }
@@ -336,6 +354,12 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 // only Node_IDs and copied runtime products.
 process_monitor_build :: proc(state: rawptr, rt: ^alicorn.Runtime, logical_width, logical_height: int, dpi_scale: f32) -> alicorn.Node_ID {
 	app := cast(^Process_Monitor)state
+	previous_temp_allocator := context.temp_allocator
+	context.temp_allocator = app.scratch_allocator
+	defer {
+		context.temp_allocator = previous_temp_allocator
+		process_monitor_scratch_reset(app)
+	}
 	first_build := app.filter_node == 0
 	nodes := process_monitor_render(rt, app, f32(logical_width), f32(logical_height), dpi_scale)
 	if first_build && nodes.filter != 0 { alicorn.focus(rt, nodes.filter) }
@@ -343,14 +367,16 @@ process_monitor_build :: proc(state: rawptr, rt: ^alicorn.Runtime, logical_width
 }
 
 // process_monitor_adopt_text_change is the application-owned side of the
-// public Text_Change contract. A changed result transfers ownership of the
-// runtime-owned text to the monitor; a no-op result must still be released.
+// public Text_Change contract. The callback borrows runtime-owned text for
+// the duration of the call, so a changed result is cloned into the monitor's
+// persistent allocator. The host releases the original runtime product.
 process_monitor_adopt_text_change :: proc(app: ^Process_Monitor, change: alicorn.Text_Change) {
 	if change.changed {
-		if len(app.filter) > 0 { delete(app.filter) }
-		app.filter = change.text
-	} else if len(change.text) > 0 {
-		delete(change.text)
+		copy, err := strings.clone(change.text, app.persistent_allocator)
+		if err == nil {
+			if len(app.filter) > 0 { delete(app.filter, app.persistent_allocator) }
+			app.filter = copy
+		}
 	}
 }
 
@@ -388,7 +414,12 @@ process_monitor_on_tick :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	// change when a new sample is available. This keeps the monitor's GPU work
 	// proportional to information changes rather than repainting duplicates.
 	if app.sample_count == 0 || app.tick_count % 15 == 0 {
-		if process_monitor_sample(app) {
+		previous_temp_allocator := context.temp_allocator
+		context.temp_allocator = app.scratch_allocator
+		sampled := process_monitor_sample(app)
+		context.temp_allocator = previous_temp_allocator
+		process_monitor_scratch_reset(app)
+		if sampled {
 			process_monitor_graph_tick(app)
 			if app.surface_node != 0 {
 				_ = alicorn.gpu_surface_update(rt, app.surface_node, app.graph_revision, app.cpu_history[:])

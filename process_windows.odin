@@ -85,11 +85,11 @@ process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
 	app.last_qpc = now
 
 	for row in app.rows {
-		if len(row.identity) > 0 { delete(row.identity) }
-		if len(row.name) > 0 { delete(row.name) }
+		if len(row.identity) > 0 { delete(row.identity, app.persistent_allocator) }
+		if len(row.name) > 0 { delete(row.name, app.persistent_allocator) }
 	}
 	clear(&app.rows)
-	next_cpu := make(map[Process_Key]u64)
+	next_cpu := make(map[Process_Key]u64, allocator=app.persistent_allocator)
 	snapshot := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if snapshot == windows.INVALID_HANDLE_VALUE {
 		delete(next_cpu)
@@ -110,11 +110,11 @@ process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
 				key := Process_Key{pid, filetime_value(creation)}
 				cpu_time := filetime_value(kernel) + filetime_value(user)
 				identity_temp := process_identity_string(key)
-				identity, identity_err := strings.clone(identity_temp)
+				identity, identity_err := strings.clone(identity_temp, app.persistent_allocator)
 				if identity_err != nil { identity = "" }
 				row := Process_Record{key=key, cpu_time_100ns=cpu_time, identity=identity}
 				name, name_err := windows.wstring_to_utf8_alloc(cstring16(raw_data(entry.szExeFile[:])), -1, context.temp_allocator)
-				if name_err == nil { row.name, _ = strings.clone(name) } else { row.name, _ = strings.clone("unknown") }
+				if name_err == nil { row.name, _ = strings.clone(name, app.persistent_allocator) } else { row.name, _ = strings.clone("unknown", app.persistent_allocator) }
 				if previous, found := app.previous_cpu[key]; found && elapsed_qpc > 0 && cpu_time >= previous {
 					elapsed_seconds := f64(elapsed_qpc) / f64(app.qpc_frequency)
 					process_seconds := f64(cpu_time-previous) / 10_000_000.0
