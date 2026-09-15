@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:strings"
+import "core:time"
 import alicorn "vendor/alicorn/runtime"
 
 // Process_Key deliberately includes the creation timestamp. Windows may
@@ -38,6 +39,17 @@ Monitor_Key :: enum {
 	Toggle_Pause,
 }
 
+// Shared table geometry keeps the header and rows aligned even as values
+// change. The process-name column is the only flexible column.
+TABLE_MARKER_WIDTH :: 28
+TABLE_PID_WIDTH    :: 72
+TABLE_CPU_WIDTH    :: 82
+TABLE_MEMORY_WIDTH :: 110
+
+SUMMARY_CPU_WIDTH       :: 150
+SUMMARY_MEMORY_WIDTH    :: 300
+SUMMARY_PROCESSES_WIDTH :: 170
+
 Process_Monitor :: struct {
 	filter:            string,
 	rows:              [dynamic]Process_Record,
@@ -64,6 +76,9 @@ Process_Monitor :: struct {
 	qpc_frequency:     u64,
 	last_qpc:          u64,
 	tick_count:        u64,
+	last_tick_time:    time.Time,
+	tick_time_valid:   bool,
+	tick_hz:           f32,
 	filter_node:       alicorn.Node_ID,
 	surface_node:      alicorn.Node_ID,
 }
@@ -198,24 +213,30 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	alicorn.text(&ui, "Process Monitor / Alicorn dogfood")
 	header_style := alicorn.Layout_Style{.Row, -1, 28, 0, -1, 0, -1, 0, 0, 8, .Stretch, false}
 	alicorn.container_begin(&ui, .Container, label="system-summary", style=header_style, color=alicorn.Color{0.08, 0.14, 0.24, 1})
-	alicorn.text(&ui, fmt.tprintf("CPU %.1f%%", app.cpu_percent))
-	alicorn.text(&ui, fmt.tprintf("System memory %s / %s", format_bytes(app.memory_used), format_bytes(app.memory_total)))
-	alicorn.text(&ui, fmt.tprintf("Processes %d", len(app.rows)))
+	alicorn.text(&ui, fmt.tprintf("CPU %.1f%%", app.cpu_percent), style=alicorn.Layout_Style{.Row, SUMMARY_CPU_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, fmt.tprintf("System memory %s / %s", format_bytes(app.memory_used), format_bytes(app.memory_total)), style=alicorn.Layout_Style{.Row, SUMMARY_MEMORY_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, fmt.tprintf("Processes %d", len(app.rows)), style=alicorn.Layout_Style{.Row, SUMMARY_PROCESSES_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, fmt.tprintf("Host ticks %.1f Hz", app.tick_hz), style=alicorn.Layout_Style{.Row, 170, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.container_end(&ui)
 
 	graph_width := logical_width - 24
 	if graph_width < 260 { graph_width = 260 }
 	if graph_width > 1000 { graph_width = 1000 }
-	alicorn.container_begin(&ui, .Container, label="cpu-graph", style=alicorn.Layout_Style{.Column, graph_width, 190, 0, -1, 0, -1, 0, 6, 6, .Stretch, false}, color=alicorn.Color{0.055, 0.08, 0.13, 1})
-	alicorn.container_begin(&ui, .Container, label="cpu-graph-header", style=alicorn.Layout_Style{.Row, -1, 24, 0, -1, 0, -1, 0, 0, 8, .Stretch, false})
-	alicorn.text(&ui, "CPU history (GPU surface)")
-	alicorn.text(&ui, fmt.tprintf("Current CPU %.1f%%", app.cpu_percent))
+	graph_color := alicorn.Color{0.055, 0.08, 0.13, 1}
+	graph_header_color := alicorn.Color{0.07, 0.11, 0.18, 1}
+	alicorn.container_begin(&ui, .Container, label="cpu-graph", style=alicorn.Layout_Style{.Column, graph_width, 190, 0, -1, 0, -1, 0, 6, 6, .Stretch, false}, color=graph_color)
+	// These containers are layout-only, but the current public container API
+	// paints when no color is supplied. Use the intended graph colors so the
+	// default light fill cannot leak into the chart area.
+	alicorn.container_begin(&ui, .Container, label="cpu-graph-header", style=alicorn.Layout_Style{.Row, -1, 24, 0, -1, 0, -1, 0, 0, 8, .Stretch, false}, color=graph_header_color)
+	alicorn.text(&ui, "CPU history / GPU surface", style=alicorn.Layout_Style{.Row, 260, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, fmt.tprintf("Current CPU %.1f%%", app.cpu_percent), style=alicorn.Layout_Style{.Row, 180, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.container_end(&ui)
-	alicorn.container_begin(&ui, .Container, label="cpu-graph-body", style=alicorn.Layout_Style{.Row, -1, 150, 0, -1, 0, -1, 0, 0, 4, .Stretch, false})
-	alicorn.container_begin(&ui, .Container, label="cpu-graph-axis", style=alicorn.Layout_Style{.Column, 42, 150, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "100%")
-	alicorn.text(&ui, "50%")
-	alicorn.text(&ui, "0%")
+	alicorn.container_begin(&ui, .Container, label="cpu-graph-body", style=alicorn.Layout_Style{.Row, -1, 150, 0, -1, 0, -1, 0, 0, 4, .Stretch, false}, color=graph_color)
+	alicorn.container_begin(&ui, .Container, label="cpu-graph-axis", style=alicorn.Layout_Style{.Column, 42, 150, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}, color=graph_color)
+	alicorn.text(&ui, "100%", style=alicorn.Layout_Style{.Column, 42, 50, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, "50%", style=alicorn.Layout_Style{.Column, 42, 50, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, "0%", style=alicorn.Layout_Style{.Column, 42, 50, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.container_end(&ui)
 	surface_width := graph_width - 58
 	if surface_width < 160 { surface_width = 160 }
@@ -238,12 +259,12 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	alicorn.container_end(&ui)
 
 	alicorn.container_begin(&ui, .Container, label="process-table-header", style=alicorn.Layout_Style{.Row, -1, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}, color=alicorn.Color{0.08, 0.11, 0.16, 1})
-	alicorn.text(&ui, "", style=alicorn.Layout_Style{.Row, 28, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "PID", style=alicorn.Layout_Style{.Row, 72, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, "", style=alicorn.Layout_Style{.Row, TABLE_MARKER_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, "PID", style=alicorn.Layout_Style{.Row, TABLE_PID_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.text(&ui, "PROCESS", style=alicorn.Layout_Style{.Row, -1, 24, 0, -1, 0, -1, 1, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "CPU", style=alicorn.Layout_Style{.Row, 82, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "WS", style=alicorn.Layout_Style{.Row, 110, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "PRIVATE", style=alicorn.Layout_Style{.Row, 110, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, "CPU", style=alicorn.Layout_Style{.Row, TABLE_CPU_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, "WS", style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, "PRIVATE", style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.container_end(&ui)
 	row_height: f32 = 24
 	list_height := logical_height - 340
@@ -261,12 +282,12 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 		alicorn.container_begin(&ui, .Container, label="process-row", style=row_style)
 		selected := app.has_selected && process_key_equal(app.selected, row.key)
 		marker := selected ? ">" : ""
-		clicked_marker := alicorn.button(&ui, marker, key=alicorn.key_string("marker"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, 28, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-		clicked_pid := alicorn.button(&ui, fmt.tprintf("%d", row.key.pid), key=alicorn.key_string("pid"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, 72, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+		clicked_marker := alicorn.button(&ui, marker, key=alicorn.key_string("marker"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, TABLE_MARKER_WIDTH, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+		clicked_pid := alicorn.button(&ui, fmt.tprintf("%d", row.key.pid), key=alicorn.key_string("pid"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, TABLE_PID_WIDTH, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 		clicked_row_name := alicorn.button(&ui, row.name, key=alicorn.key_string("name"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, -1, row_height, 0, -1, 0, -1, 1, 0, 0, .Stretch, true})
-		clicked_cpu := alicorn.button(&ui, fmt.tprintf("%.1f%%", row.cpu_percent), key=alicorn.key_string("cpu"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, 82, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-		clicked_ws := alicorn.button(&ui, format_bytes(row.working_set_bytes), key=alicorn.key_string("working-set"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, 110, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-		clicked_private := alicorn.button(&ui, format_bytes(row.private_bytes), key=alicorn.key_string("private"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, 110, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+		clicked_cpu := alicorn.button(&ui, fmt.tprintf("%.1f%%", row.cpu_percent), key=alicorn.key_string("cpu"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, TABLE_CPU_WIDTH, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+		clicked_ws := alicorn.button(&ui, format_bytes(row.working_set_bytes), key=alicorn.key_string("working-set"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+		clicked_private := alicorn.button(&ui, format_bytes(row.private_bytes), key=alicorn.key_string("private"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 		if clicked_marker || clicked_pid || clicked_row_name || clicked_cpu || clicked_ws || clicked_private {
 			app.selected = row.key
 			app.has_selected = true
@@ -314,6 +335,20 @@ process_monitor_on_scroll :: proc(state: rawptr, rt: ^alicorn.Runtime, delta_y: 
 process_monitor_on_tick :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	app := cast(^Process_Monitor)state
 	app.tick_count += 1
+	now := time.now()
+	if app.tick_time_valid {
+		delta_ns := time.duration_nanoseconds(time.diff(app.last_tick_time, now))
+		if delta_ns > 0 {
+			instant_hz := f32(1e9 / f64(delta_ns))
+			if app.tick_hz == 0 {
+				app.tick_hz = instant_hz
+			} else {
+				app.tick_hz = app.tick_hz*0.9 + instant_hz*0.1
+			}
+		}
+	}
+	app.last_tick_time = now
+	app.tick_time_valid = true
 	if app.paused { return }
 	// The host ticks at display cadence, but process data and graph history only
 	// change when a new sample is available. This keeps the monitor's GPU work
