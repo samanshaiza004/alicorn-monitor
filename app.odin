@@ -260,7 +260,13 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	if clicked_pause { app.paused = !app.paused }
 	alicorn.container_end(&ui)
 
-	alicorn.container_begin(&ui, .Container, label="process-table-header", style=alicorn.Layout_Style{.Row, -1, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}, color=alicorn.Color{0.08, 0.11, 0.16, 1})
+	table_body_width := logical_width - 24
+	if table_body_width < 180 { table_body_width = 180 }
+	if table_body_width > 1000 { table_body_width = 1000 }
+	table_scrollbar_width: f32 = 14
+	table_list_width := table_body_width - table_scrollbar_width - 6
+	if table_list_width < 120 { table_list_width = 120 }
+	alicorn.container_begin(&ui, .Container, label="process-table-header", style=alicorn.Layout_Style{.Row, table_list_width, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}, color=alicorn.Color{0.08, 0.11, 0.16, 1})
 	alicorn.text(&ui, "", style=alicorn.Layout_Style{.Row, TABLE_MARKER_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.text(&ui, "PID", style=alicorn.Layout_Style{.Row, TABLE_PID_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.text(&ui, "PROCESS", style=alicorn.Layout_Style{.Row, -1, 24, 0, -1, 0, -1, 1, 0, 0, .Stretch, false})
@@ -276,14 +282,8 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	metrics := alicorn.virtual_list_metrics(len(app.visible), app.scroll_y, list_height, row_height)
 	app.scroll_y = metrics.offset_y
 	first, last := metrics.first, metrics.last
-	body_width := logical_width - 24
-	if body_width < 180 { body_width = 180 }
-	if body_width > 1000 { body_width = 1000 }
-	scrollbar_width: f32 = 14
-	list_width := body_width - scrollbar_width - 6
-	if list_width < 120 { list_width = 120 }
-	alicorn.container_begin(&ui, .Container, label="process-table-body", style=alicorn.Layout_Style{.Row, body_width, list_height, 0, -1, 0, -1, 0, 6, 0, .Stretch, true})
-	alicorn.container_begin(&ui, .Virtual_List, label="process-list", style=alicorn.Layout_Style{.Column, list_width, list_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, scroll_offset_y=metrics.offset_y)
+	alicorn.container_begin(&ui, .Container, label="process-table-body", style=alicorn.Layout_Style{.Row, table_body_width, list_height, 0, -1, 0, -1, 0, 6, 0, .Stretch, true})
+	alicorn.container_begin(&ui, .Virtual_List, label="process-list", style=alicorn.Layout_Style{.Column, table_list_width, list_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, scroll_offset_y=metrics.offset_y)
 	for position := first; position < last; position += 1 {
 		row := app.rows[app.visible[position]]
 		if !alicorn.component_begin(&ui, alicorn.key_pair(u64(row.key.pid), row.key.creation_time)) { continue }
@@ -315,12 +315,12 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	thumb_travel := list_height - thumb_height
 	thumb_y: f32 = 0
 	if metrics.max_scroll_y > 0 { thumb_y = thumb_travel * metrics.offset_y / metrics.max_scroll_y }
-	alicorn.container_begin(&ui, .Container, label="process-scrollbar", style=alicorn.Layout_Style{.Column, scrollbar_width, list_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, color=alicorn.Color{0.045, 0.065, 0.10, 1})
+	alicorn.container_begin(&ui, .Container, label="process-scrollbar", style=alicorn.Layout_Style{.Column, table_scrollbar_width, list_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, color=alicorn.Color{0.045, 0.065, 0.10, 1})
 	if thumb_y > 0 {
-		alicorn.container_begin(&ui, .Container, label="scrollbar-spacer", style=alicorn.Layout_Style{.Column, scrollbar_width, thumb_y, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+		alicorn.container_begin(&ui, .Container, label="scrollbar-spacer", style=alicorn.Layout_Style{.Column, table_scrollbar_width, thumb_y, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 		alicorn.container_end(&ui)
 	}
-	alicorn.container_begin(&ui, .Container, label="scrollbar-thumb", style=alicorn.Layout_Style{.Column, scrollbar_width, thumb_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}, color=alicorn.Color{0.20, 0.42, 0.68, 1})
+	alicorn.container_begin(&ui, .Container, label="scrollbar-thumb", style=alicorn.Layout_Style{.Column, table_scrollbar_width, thumb_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}, color=alicorn.Color{0.20, 0.42, 0.68, 1})
 	alicorn.container_end(&ui)
 	alicorn.container_end(&ui)
 	alicorn.container_end(&ui)
