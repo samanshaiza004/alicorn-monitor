@@ -28,10 +28,26 @@ Run the bounded smoke test from the repository root:
 .\tools\run.ps1 -Smoke
 ```
 
+For a no-console machine-readable capture, run:
+
+```powershell
+.\tools\run.ps1 -Diagnostics -CaptureAfter 2 -CaptureDir out\diagnostics
+```
+
+The host writes `diagnostics.json` with frame-time percentiles, event/build
+timings, GPU submission data, retained-node counts, display-command counts,
+text metrics, and explicit notes about what the counters do not measure.
+
 The output reports host submissions and retirement, while the monitor reports
 samples, visible rows, graph updates, and Windows process-query failures. The
 last value is expected to be nonzero on many systems because protected
 processes can reject limited query access.
+
+The live summary also shows an app-owned `Host ticks` estimate. It measures
+the cadence of the native host's public `on_tick` callback; it is not a full
+frame-rate or GPU-time measurement. The graph header and chart body use
+explicit colors because the current public container API paints colored
+containers, including layout-only containers.
 
 The table reports `WS` (working set) and `PRIVATE` (private committed memory)
 separately. A large working set can include shared pages from SDL, the Odin

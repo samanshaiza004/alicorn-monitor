@@ -1,6 +1,11 @@
 param(
     [string]$Odin = $env:ALICORN_ODIN,
-    [switch]$Smoke
+    [switch]$Smoke,
+    [switch]$Diagnostics,
+    [int]$CaptureAfter = 2,
+    [string]$CaptureDir = 'out\diagnostics',
+    [switch]$InputDebug,
+    [switch]$DebugBounds
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,5 +43,12 @@ Copy-Item -LiteralPath $sdlDll -Destination 'out\SDL3.dll' -Force
 
 $args = @()
 if ($Smoke) { $args += '--smoke' }
+if ($Diagnostics) {
+    $args += '--diagnostics'
+    $args += "--capture-after=$CaptureAfter"
+    $args += "--capture-dir=$CaptureDir"
+}
+if ($InputDebug) { $args += '--input-debug' }
+if ($DebugBounds) { $args += '--debug-bounds' }
 & .\out\alicorn-monitor.exe @args
 exit $LASTEXITCODE
