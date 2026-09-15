@@ -40,10 +40,19 @@ main :: proc() {
 	}
 	smoke := false
 	sample_check := false
+	input_debug := false
+	disable_sampler := false
+	disable_surface := false
 	for argument in os.args {
 		if argument == "--smoke" { smoke = true }
 		if argument == "--sample-check" { sample_check = true }
+		if argument == "--input-debug" { input_debug = true }
+		if argument == "--no-sampler" { disable_sampler = true }
+		if argument == "--no-surface" { disable_surface = true }
 	}
+	app.input_debug = input_debug
+	app.disable_sampler = disable_sampler
+	app.disable_surface = disable_surface
 	when ODIN_OS == .Darwin {
 		if sample_check {
 			if !process_monitor_sampler_check() { os.exit(1) }

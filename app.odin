@@ -61,8 +61,12 @@ Process_Monitor :: struct {
 	selected:          Process_Key,
 	has_selected:      bool,
 	paused:            bool,
+	disable_sampler:   bool,
+	disable_surface:   bool,
 	sample_count:      u64,
 	query_failures:    int,
+	input_debug:       bool,
+	last_pointer_events: u64,
 	qpc_frequency:     u64,
 	last_qpc:          u64,
 	sample_tick:       time.Tick,
@@ -380,15 +384,20 @@ process_monitor_on_scroll :: proc(state: rawptr, rt: ^alicorn.Runtime, delta_y: 
 
 process_monitor_on_tick :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	app := cast(^Process_Monitor)state
+	if app.input_debug && rt.stats.pointer_events != app.last_pointer_events {
+		fmt.println("monitor_input", "pointer_events", rt.stats.pointer_events, "focused", rt.focused, "selected", rt.selected)
+		app.last_pointer_events = rt.stats.pointer_events
+	}
 	app.tick_count += 1
 	if app.paused { return }
+	if app.disable_sampler { return }
 	// The host ticks at display cadence, but process data and graph history only
 	// change when a new sample is available. This keeps the monitor's GPU work
 	// proportional to information changes rather than repainting duplicates.
 	if app.sample_count == 0 || app.tick_count % 15 == 0 {
 		if process_monitor_sample(app) {
 			process_monitor_graph_tick(app)
-			if app.surface_node != 0 {
+			if app.surface_node != 0 && !app.disable_surface {
 				_ = alicorn.gpu_surface_update(rt, app.surface_node, app.graph_revision, app.cpu_history[:])
 			}
 			alicorn.invalidate_root(rt, "process monitor sample")
