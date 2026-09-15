@@ -39,8 +39,14 @@ main :: proc() {
 		on_tick = process_monitor_on_tick,
 	}
 	smoke := false
+	self_test := false
 	for argument in os.args {
 		if argument == "--smoke" { smoke = true }
+		if argument == "--self-test" { self_test = true }
+	}
+	if self_test {
+		if !process_monitor_run_dogfood_tests() { os.exit(1) }
+		return
 	}
 	host.Run(application, smoke)
 	fmt.println(

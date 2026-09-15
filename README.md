@@ -31,6 +31,15 @@ For a bounded native smoke run:
 .\tools\run.ps1 -Smoke
 ```
 
+For the monitor-side public text callback test:
+
+```powershell
+.\tools\run.ps1 -SelfTest
+```
+
+This exercises adoption of committed insertion, Backspace, Delete, selection
+replacement, and no-op `Text_Change` ownership through the monitor's callback.
+
 The Alicorn SDK's SDL3 DLL must be beside the executable on Windows. The
 repository's `tools/run.ps1` resolves Odin, validates that DLL, copies it to
 `out`, builds the app, and launches it.

@@ -43,6 +43,23 @@ samples, visible rows, graph updates, and Windows process-query failures. The
 last value is expected to be nonzero on many systems because protected
 processes can reject limited query access.
 
+The monitor-side callback adoption test is separate from the native smoke run:
+
+```powershell
+.\tools\run.ps1 -SelfTest
+```
+
+It drives the public runtime edit primitives and passes each returned
+`Text_Change` through `process_monitor_on_text_change`. The test covers
+committed insertion, external Backspace/Delete adoption, replacement of a
+selection, and release of a no-op change. Modifier-aware word movement and
+selection are translated by Alicorn's public SDL host into the runtime's
+semantic text commands; they are deliberately not reimplemented in this app.
+
+Diagnostics counters are host-owned. When `-Diagnostics` is used, inspect
+`out\diagnostics\diagnostics.json` for timing, GPU, retained-node, display,
+and text counters; the monitor has no public callback field for those values.
+
 The live summary also shows an app-owned `Host ticks` estimate. It measures
 the cadence of the native host's public `on_tick` callback; it is not a full
 frame-rate or GPU-time measurement. The graph header and chart body use
