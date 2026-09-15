@@ -23,6 +23,17 @@ dogfood_expect_filter :: proc(state: ^Dogfood_Test_State, app: ^Process_Monitor,
 // application callback adopts or releases the returned Text_Change.
 process_monitor_run_dogfood_tests :: proc() -> bool {
 	state := Dogfood_Test_State{}
+	scroll_app := process_monitor_new()
+	defer process_monitor_destroy(&scroll_app)
+	scroll_app.list_viewport_height = 240
+	scroll_app.row_height = 24
+	for i := 0; i < 100; i += 1 { append(&scroll_app.visible, i) }
+	process_monitor_scroll(&scroll_app, alicorn.Scroll_Event{delta_y=-0.5})
+	dogfood_expect(&state, scroll_app.scroll_y == 12, "precise scroll deltas preserve fractional pixel movement")
+	process_monitor_scroll(&scroll_app, alicorn.Scroll_Event{ticks_y=-1})
+	dogfood_expect(&state, scroll_app.scroll_y == 84, "wheel ticks use a native three-line scroll step")
+	process_monitor_scroll(&scroll_app, alicorn.Scroll_Event{ticks_y=-100})
+	dogfood_expect(&state, scroll_app.scroll_y == 2160, "scrolling clamps to the actual content and viewport extent")
 	app := process_monitor_new()
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 360})
 	// The callback adopts text allocated by the runtime, so destroy the app
