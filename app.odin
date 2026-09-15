@@ -343,15 +343,22 @@ process_monitor_build :: proc(state: rawptr, rt: ^alicorn.Runtime, logical_width
 	return nodes.surface
 }
 
-process_monitor_on_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) {
-	app := cast(^Process_Monitor)state
+// process_monitor_adopt_text_change is the application-owned side of the
+// public Text_Change contract. A changed result transfers ownership of the
+// runtime-owned text to the monitor; a no-op result must still be released.
+process_monitor_adopt_text_change :: proc(app: ^Process_Monitor, change: alicorn.Text_Change) {
 	if change.changed {
 		if len(app.filter) > 0 { delete(app.filter) }
 		app.filter = change.text
-		alicorn.invalidate_root(rt, "process monitor filter changed")
 	} else if len(change.text) > 0 {
 		delete(change.text)
 	}
+}
+
+process_monitor_on_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, change: alicorn.Text_Change) {
+	app := cast(^Process_Monitor)state
+	process_monitor_adopt_text_change(app, change)
+	if change.changed { alicorn.invalidate_root(rt, "process monitor filter changed") }
 }
 
 process_monitor_on_scroll :: proc(state: rawptr, rt: ^alicorn.Runtime, delta_y: f32) {

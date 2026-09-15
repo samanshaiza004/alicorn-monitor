@@ -43,16 +43,22 @@ main :: proc() {
 	input_debug := false
 	disable_sampler := false
 	disable_surface := false
+	self_test := false
 	for argument in os.args {
 		if argument == "--smoke" { smoke = true }
 		if argument == "--sample-check" { sample_check = true }
 		if argument == "--input-debug" { input_debug = true }
 		if argument == "--no-sampler" { disable_sampler = true }
 		if argument == "--no-surface" { disable_surface = true }
+		if argument == "--self-test" { self_test = true }
 	}
 	app.input_debug = input_debug
 	app.disable_sampler = disable_sampler
 	app.disable_surface = disable_surface
+	if self_test {
+		if !process_monitor_run_dogfood_tests() { os.exit(1) }
+		return
+	}
 	when ODIN_OS == .Darwin {
 		if sample_check {
 			if !process_monitor_sampler_check() { os.exit(1) }

@@ -5,7 +5,8 @@ param(
     [int]$CaptureAfter = 2,
     [string]$CaptureDir = 'out\diagnostics',
     [switch]$InputDebug,
-    [switch]$DebugBounds
+    [switch]$DebugBounds,
+    [switch]$SelfTest
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,6 +44,7 @@ Copy-Item -LiteralPath $sdlDll -Destination 'out\SDL3.dll' -Force
 
 $args = @()
 if ($Smoke) { $args += '--smoke' }
+if ($SelfTest) { $args += '--self-test' }
 if ($Diagnostics) {
     $args += '--diagnostics'
     $args += "--capture-after=$CaptureAfter"
