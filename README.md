@@ -15,6 +15,7 @@ The current screen combines:
   process name, CPU, and platform-truthful memory metrics;
 - filtering, sorting, selection, keyboard navigation, and scrolling;
 - Windows process sampling keyed by PID plus creation time;
+- continuous fixed-height scrolling with a proportional position indicator;
 - Darwin process sampling keyed by PID plus `ri_proc_start_abstime`.
 
 ## Build
@@ -40,6 +41,16 @@ For the monitor-side public text callback test:
 
 This exercises adoption of committed insertion, Backspace, Delete, selection
 replacement, and no-op `Text_Change` ownership through the monitor's callback.
+
+For a machine-readable interaction/performance capture:
+
+```powershell
+.\tools\run.ps1 -Diagnostics -CaptureAfter 5 -CaptureDir out\diagnostics
+```
+
+The capture includes frame-time percentiles and maximums, event bursts, event
+queue age, and input-to-submit latency. Press `F12` while the app is running
+to capture on demand; `F11` toggles retained bounds for layout debugging.
 
 The Alicorn SDK's SDL3 DLL must be beside the executable on Windows. The
 repository's `tools/run.ps1` resolves Odin, validates that DLL, copies it to
