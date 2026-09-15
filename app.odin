@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:strings"
+import "core:time"
 import alicorn "vendor/alicorn/runtime"
 
 // Process_Key deliberately includes the creation timestamp. Windows may
@@ -51,6 +52,7 @@ Process_Monitor :: struct {
 	last_system_idle:   u64,
 	last_system_kernel: u64,
 	last_system_user:   u64,
+	last_system_nice:   u64,
 	process_revision:  u64,
 	graph_revision:    u64,
 	scroll_y:          f32,
@@ -63,6 +65,7 @@ Process_Monitor :: struct {
 	query_failures:    int,
 	qpc_frequency:     u64,
 	last_qpc:          u64,
+	sample_tick:       time.Tick,
 	tick_count:        u64,
 	filter_node:       alicorn.Node_ID,
 	surface_node:      alicorn.Node_ID,
@@ -229,6 +232,27 @@ format_bytes :: proc(value: u64) -> string {
 	return fmt.tprintf("%d B", value)
 }
 
+process_memory_primary_label :: proc() -> string {
+	when ODIN_OS == .Darwin {
+		return "RESIDENT"
+	}
+	return "WS"
+}
+
+process_memory_secondary_label :: proc() -> string {
+	when ODIN_OS == .Darwin {
+		return "FOOTPRINT"
+	}
+	return "PRIVATE"
+}
+
+system_memory_label :: proc() -> string {
+	when ODIN_OS == .Darwin {
+		return "System memory (non-free)"
+	}
+	return "System memory"
+}
+
 process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logical_width, logical_height: f32, dpi_scale: f32) -> Monitor_Nodes {
 	ui, build := alicorn.begin_frame(rt)
 	if !build { return Monitor_Nodes{} }
@@ -238,9 +262,12 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	alicorn.text(&ui, "Process Monitor / Alicorn dogfood", TITLE_SITE)
 	header_style := alicorn.Layout_Style{.Row, -1, 28, 0, -1, 0, -1, 0, 0, 8, .Stretch, false}
 	alicorn.container_begin(&ui, .Container, SUMMARY_PANEL_SITE, label="system-summary", style=header_style, color=alicorn.Color{0.08, 0.14, 0.24, 1})
-	alicorn.text(&ui, fmt.tprintf("CPU %.1f%%", app.cpu_percent), CPU_SITE)
-	alicorn.text(&ui, fmt.tprintf("System memory %s / %s", format_bytes(app.memory_used), format_bytes(app.memory_total)), MEMORY_SITE)
-	alicorn.text(&ui, fmt.tprintf("Processes %d", len(app.rows)), COUNT_SITE)
+	summary_cpu_style := alicorn.Layout_Style{.Row, 140, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}
+	summary_memory_style := alicorn.Layout_Style{.Row, 430, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}
+	summary_count_style := alicorn.Layout_Style{.Row, -1, 28, 0, -1, 0, -1, 1, 0, 0, .Stretch, false}
+	alicorn.text(&ui, fmt.tprintf("CPU %.1f%%", app.cpu_percent), CPU_SITE, style=summary_cpu_style)
+	alicorn.text(&ui, fmt.tprintf("%s %s / %s", system_memory_label(), format_bytes(app.memory_used), format_bytes(app.memory_total)), MEMORY_SITE, style=summary_memory_style)
+	alicorn.text(&ui, fmt.tprintf("Processes %d", len(app.rows)), COUNT_SITE, style=summary_count_style)
 	alicorn.container_end(&ui)
 
 	graph_width := logical_width - 24
@@ -282,8 +309,8 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	alicorn.text(&ui, "PID", TABLE_HEADER_PID_SITE, style=alicorn.Layout_Style{.Row, 72, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.text(&ui, "PROCESS", TABLE_HEADER_NAME_SITE, style=alicorn.Layout_Style{.Row, -1, 24, 0, -1, 0, -1, 1, 0, 0, .Stretch, false})
 	alicorn.text(&ui, "CPU", TABLE_HEADER_CPU_SITE, style=alicorn.Layout_Style{.Row, 82, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "WS", TABLE_HEADER_WS_SITE, style=alicorn.Layout_Style{.Row, 110, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "PRIVATE", TABLE_HEADER_PRIVATE_SITE, style=alicorn.Layout_Style{.Row, 110, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, process_memory_primary_label(), TABLE_HEADER_WS_SITE, style=alicorn.Layout_Style{.Row, 110, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, process_memory_secondary_label(), TABLE_HEADER_PRIVATE_SITE, style=alicorn.Layout_Style{.Row, 110, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.container_end(&ui)
 	row_height: f32 = 24
 	list_height := logical_height - 340

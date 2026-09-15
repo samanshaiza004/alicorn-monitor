@@ -39,14 +39,26 @@ main :: proc() {
 		on_tick = process_monitor_on_tick,
 	}
 	smoke := false
+	sample_check := false
 	for argument in os.args {
 		if argument == "--smoke" { smoke = true }
+		if argument == "--sample-check" { sample_check = true }
+	}
+	when ODIN_OS == .Darwin {
+		if sample_check {
+			if !process_monitor_sampler_check() { os.exit(1) }
+			return
+		}
 	}
 	host.Run(application, smoke)
 	fmt.println(
 		"process_monitor PASS",
 		"samples", app.sample_count,
 		"rows", len(app.rows),
+		"cpu_percent", fmt.tprintf("%.1f", app.cpu_percent),
+		"memory_used", format_bytes(app.memory_used),
+		"memory_total", format_bytes(app.memory_total),
+		"identity_keys", len(app.previous_cpu),
 		"surface_updates", app.graph_revision,
 		"surface_frames", app.graph_revision,
 		"query_failures", app.query_failures,
