@@ -33,6 +33,13 @@ dogfood_append_row :: proc(app: ^Process_Monitor, pid: u32, name: string) {
 	})
 }
 
+dogfood_node_by_label :: proc(rt: ^alicorn.Runtime, label: string) -> ^alicorn.Node {
+	for _, node in rt.nodes {
+		if node.label == label { return node }
+	}
+	return nil
+}
+
 // process_monitor_run_dogfood_tests exercises the monitor's external side of
 // the public text-editing boundary. The callback clones the borrowed runtime
 // text, while this direct test call releases each returned product explicitly
@@ -62,6 +69,21 @@ process_monitor_run_dogfood_tests :: proc() -> bool {
 	projection_app.filter, _ = strings.clone("alpha")
 	process_monitor_prepare_visible(&projection_app)
 	dogfood_expect(&state, projection_app.projection_rebuilds == projection_rebuilds+1 && len(projection_app.visible) == 1, "filter changes rebuild only the visible projection")
+	layout_app := process_monitor_new()
+	layout_rt := alicorn.new_runtime(alicorn.Rect{0, 0, 960, 720})
+	defer alicorn.destroy_runtime(&layout_rt)
+	defer process_monitor_destroy(&layout_app)
+	process_monitor_build(rawptr(&layout_app), &layout_rt, 960, 720, 1)
+	root_bottom := layout_rt.viewport.y + layout_rt.viewport.h
+	table_body := dogfood_node_by_label(&layout_rt, "process-table-body")
+	process_list := dogfood_node_by_label(&layout_rt, "process-list")
+	process_scrollbar := dogfood_node_by_label(&layout_rt, "process-scrollbar")
+	dogfood_expect(&state,
+		table_body != nil && process_list != nil && process_scrollbar != nil &&
+			table_body.bounds.y+table_body.bounds.h <= root_bottom &&
+			process_list.bounds.y+process_list.bounds.h <= root_bottom &&
+			process_scrollbar.bounds.y+process_scrollbar.bounds.h <= root_bottom,
+		"monitor table body, virtual list, and scrollbar must stay inside the window")
 	app := process_monitor_new()
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 360})
 	// The callback adopts text allocated by the runtime, so destroy the app

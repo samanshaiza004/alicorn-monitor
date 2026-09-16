@@ -51,6 +51,22 @@ SUMMARY_CPU_WIDTH       :: 150
 SUMMARY_MEMORY_WIDTH    :: 300
 SUMMARY_PROCESSES_WIDTH :: 170
 
+// The root is a vertical flow with fixed-height controls and one growing
+// table body. Keep the two text labels explicit-height so the pre-layout
+// virtual-list calculation uses the same vertical contract as the retained
+// layout pass.
+MONITOR_ROOT_PADDING       :: 12
+MONITOR_ROOT_GAP           :: 6
+MONITOR_ROOT_CHILD_GAPS    :: 7
+MONITOR_TITLE_HEIGHT       :: 20
+MONITOR_SUMMARY_HEIGHT     :: 28
+MONITOR_GRAPH_HEIGHT       :: 190
+MONITOR_FILTER_LABEL_HEIGHT :: 20
+MONITOR_FILTER_HEIGHT      :: 30
+MONITOR_SORT_HEIGHT        :: 32
+MONITOR_TABLE_HEADER_HEIGHT :: 24
+MONITOR_TABLE_BODY_PADDING :: 6
+
 Process_Monitor :: struct {
 	// Application-owned persistent storage and per-callback scratch storage
 	// are captured together so monitor callbacks do not depend on whichever
@@ -288,14 +304,38 @@ system_memory_label :: proc() -> string {
 	return "System memory"
 }
 
+// The runtime resolves the growing table body during layout, while the
+// monitor must know the viewport before it can select the realized rows. This
+// mirrors the root's fixed children and subtracts the table body's padding so
+// the virtual list and scrollbar use its actual inner height.
+process_monitor_list_height :: proc(logical_height, row_height: f32) -> f32 {
+	fixed_height := f32(
+		2*MONITOR_ROOT_PADDING +
+		MONITOR_ROOT_CHILD_GAPS*MONITOR_ROOT_GAP +
+		MONITOR_TITLE_HEIGHT +
+		MONITOR_SUMMARY_HEIGHT +
+		MONITOR_GRAPH_HEIGHT +
+		MONITOR_FILTER_LABEL_HEIGHT +
+		MONITOR_FILTER_HEIGHT +
+		MONITOR_SORT_HEIGHT +
+		MONITOR_TABLE_HEADER_HEIGHT,
+	)
+	body_height := logical_height - fixed_height
+	minimum_body_height := f32(2*MONITOR_TABLE_BODY_PADDING) + row_height
+	if body_height < minimum_body_height { body_height = minimum_body_height }
+	list_height := body_height - f32(2*MONITOR_TABLE_BODY_PADDING)
+	if list_height < row_height { list_height = row_height }
+	return list_height
+}
+
 process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logical_width, logical_height: f32, dpi_scale: f32) -> Monitor_Nodes {
 	ui, build := alicorn.begin_frame(rt)
 	if !build { return Monitor_Nodes{} }
 	process_monitor_prepare_visible(app)
-	root_style := alicorn.Layout_Style{.Column, -1, -1, 0, -1, 0, -1, 0, 12, 6, .Stretch, true}
+	root_style := alicorn.Layout_Style{.Column, -1, -1, 0, -1, 0, -1, 0, MONITOR_ROOT_PADDING, MONITOR_ROOT_GAP, .Stretch, true}
 	alicorn.container_begin(&ui, .Root, label="Process Monitor", style=root_style, color=alicorn.Color{0.035, 0.045, 0.065, 1})
-	alicorn.text(&ui, "Process Monitor / Alicorn dogfood")
-	header_style := alicorn.Layout_Style{.Row, -1, 28, 0, -1, 0, -1, 0, 0, 8, .Stretch, false}
+	alicorn.text(&ui, "Process Monitor / Alicorn dogfood", style=alicorn.Layout_Style{.Column, -1, MONITOR_TITLE_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	header_style := alicorn.Layout_Style{.Row, -1, MONITOR_SUMMARY_HEIGHT, 0, -1, 0, -1, 0, 0, 8, .Stretch, false}
 	alicorn.container_begin(&ui, .Container, label="system-summary", style=header_style, color=alicorn.Color{0.08, 0.14, 0.24, 1})
 	alicorn.text(&ui, fmt.tprintf("CPU %.1f%%", app.cpu_percent), style=alicorn.Layout_Style{.Row, SUMMARY_CPU_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.text(&ui, fmt.tprintf("%s %s / %s", system_memory_label(), format_bytes(app.memory_used), format_bytes(app.memory_total)), style=alicorn.Layout_Style{.Row, SUMMARY_MEMORY_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
@@ -309,7 +349,7 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	graph_color := alicorn.Color{0.055, 0.08, 0.13, 1}
 	graph_header_color := alicorn.Color{0.07, 0.11, 0.18, 1}
 	graph_latest, _, graph_max := process_monitor_graph_range(app)
-	alicorn.container_begin(&ui, .Container, label="cpu-graph", style=alicorn.Layout_Style{.Column, graph_width, 190, 0, -1, 0, -1, 0, 6, 6, .Stretch, false}, color=graph_color)
+	alicorn.container_begin(&ui, .Container, label="cpu-graph", style=alicorn.Layout_Style{.Column, graph_width, MONITOR_GRAPH_HEIGHT, 0, -1, 0, -1, 0, 6, 6, .Stretch, false}, color=graph_color)
 	// These containers are layout-only, but the current public container API
 	// paints when no color is supplied. Use the intended graph colors so the
 	// default light fill cannot leak into the chart area.
@@ -331,10 +371,10 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	surface := alicorn.gpu_surface(&ui, "cpu-history", app.graph_revision, alicorn.Rect{0, 0, surface_width, 150}, int(surface_width*dpi_scale), int(150*dpi_scale), dpi_scale)
 	alicorn.container_end(&ui)
 	alicorn.container_end(&ui)
-	alicorn.text(&ui, fmt.tprintf("Filter (%d matching)", len(app.visible)))
-	filter_id := alicorn.text_field(&ui, app.filter, style=alicorn.Layout_Style{.Column, -1, 30, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, fmt.tprintf("Filter (%d matching)", len(app.visible)), style=alicorn.Layout_Style{.Column, -1, MONITOR_FILTER_LABEL_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	filter_id := alicorn.text_field(&ui, app.filter, style=alicorn.Layout_Style{.Column, -1, MONITOR_FILTER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 
-	alicorn.container_begin(&ui, .Container, label="sort-controls", style=alicorn.Layout_Style{.Row, -1, 32, 0, -1, 0, -1, 0, 6, 6, .Stretch, false}, color=alicorn.Color{0.06, 0.09, 0.14, 1})
+	alicorn.container_begin(&ui, .Container, label="sort-controls", style=alicorn.Layout_Style{.Row, -1, MONITOR_SORT_HEIGHT, 0, -1, 0, -1, 0, 6, 6, .Stretch, false}, color=alicorn.Color{0.06, 0.09, 0.14, 1})
 	clicked_cpu := alicorn.button(&ui, "Sort CPU", key=alicorn.key_string("sort-cpu"), state=alicorn.Button_State{selected=app.sort == .CPU}, style=alicorn.Layout_Style{.Row, 110, 28, 0, -1, 0, -1, 0, 0, 4, .Stretch, false})
 	clicked_memory := alicorn.button(&ui, "Sort Memory", key=alicorn.key_string("sort-memory"), state=alicorn.Button_State{selected=app.sort == .Memory}, style=alicorn.Layout_Style{.Row, 125, 28, 0, -1, 0, -1, 0, 0, 4, .Stretch, false})
 	clicked_name := alicorn.button(&ui, "Sort Name", key=alicorn.key_string("sort-name"), state=alicorn.Button_State{selected=app.sort == .Name}, style=alicorn.Layout_Style{.Row, 110, 28, 0, -1, 0, -1, 0, 0, 4, .Stretch, false})
@@ -352,27 +392,26 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	table_scrollbar_width: f32 = 14
 	table_list_width := table_body_width - table_scrollbar_width - 6
 	if table_list_width < 120 { table_list_width = 120 }
-	alicorn.container_begin(&ui, .Container, label="process-table-header", style=alicorn.Layout_Style{.Row, table_list_width, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}, color=alicorn.Color{0.08, 0.11, 0.16, 1})
-	alicorn.text(&ui, "", style=alicorn.Layout_Style{.Row, TABLE_MARKER_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "PID", style=alicorn.Layout_Style{.Row, TABLE_PID_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "PROCESS", style=alicorn.Layout_Style{.Row, -1, 24, 0, -1, 0, -1, 1, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "CPU", style=alicorn.Layout_Style{.Row, TABLE_CPU_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, process_memory_primary_label(), style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, process_memory_secondary_label(), style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.container_begin(&ui, .Container, label="process-table-header", style=alicorn.Layout_Style{.Row, table_list_width, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}, color=alicorn.Color{0.08, 0.11, 0.16, 1})
+	alicorn.text(&ui, "", style=alicorn.Layout_Style{.Row, TABLE_MARKER_WIDTH, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, "PID", style=alicorn.Layout_Style{.Row, TABLE_PID_WIDTH, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, "PROCESS", style=alicorn.Layout_Style{.Row, -1, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 1, 0, 0, .Stretch, false})
+	alicorn.text(&ui, "CPU", style=alicorn.Layout_Style{.Row, TABLE_CPU_WIDTH, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, process_memory_primary_label(), style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, process_memory_secondary_label(), style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.container_end(&ui)
 	row_height: f32 = 24
-	list_height := logical_height - 340
-	if list_height < row_height { list_height = row_height }
+	list_height := process_monitor_list_height(logical_height, row_height)
 	app.list_viewport_height = list_height
 	app.row_height = row_height
 	metrics := alicorn.virtual_list_metrics(len(app.visible), app.scroll_y, list_height, row_height)
 	app.scroll_y = metrics.offset_y
 	first, last := metrics.first, metrics.last
-	alicorn.container_begin(&ui, .Container, label="process-table-body", style=alicorn.Layout_Style{.Row, table_body_width, list_height, 0, -1, 0, -1, 0, 6, 0, .Stretch, true})
+	alicorn.container_begin(&ui, .Container, label="process-table-body", style=alicorn.Layout_Style{.Row, table_body_width, -1, 0, -1, 0, -1, 1, MONITOR_TABLE_BODY_PADDING, 0, .Stretch, true})
 	// `visible[first:]` has already skipped complete rows. Only apply the
 	// fractional remainder to the retained layout; using the full scroll
 	// offset here would count those skipped rows twice.
-	alicorn.container_begin(&ui, .Virtual_List, label="process-list", style=alicorn.Layout_Style{.Column, table_list_width, list_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, scroll_offset_y=metrics.offset_y, layout_scroll_offset_y=metrics.leading_offset_y)
+	alicorn.container_begin(&ui, .Virtual_List, label="process-list", style=alicorn.Layout_Style{.Column, table_list_width, -1, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, scroll_offset_y=metrics.offset_y, layout_scroll_offset_y=metrics.leading_offset_y)
 	for position := first; position < last; position += 1 {
 		row := app.rows[app.visible[position]]
 		if !alicorn.component_begin(&ui, alicorn.key_pair(u64(row.key.pid), row.key.creation_time)) { continue }
@@ -404,7 +443,7 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	thumb_travel := list_height - thumb_height
 	thumb_y: f32 = 0
 	if metrics.max_scroll_y > 0 { thumb_y = thumb_travel * metrics.offset_y / metrics.max_scroll_y }
-	alicorn.container_begin(&ui, .Container, label="process-scrollbar", style=alicorn.Layout_Style{.Column, table_scrollbar_width, list_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, color=alicorn.Color{0.045, 0.065, 0.10, 1})
+	alicorn.container_begin(&ui, .Container, label="process-scrollbar", style=alicorn.Layout_Style{.Column, table_scrollbar_width, -1, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, color=alicorn.Color{0.045, 0.065, 0.10, 1})
 	if thumb_y > 0 {
 		alicorn.container_begin(&ui, .Container, label="scrollbar-spacer", style=alicorn.Layout_Style{.Column, table_scrollbar_width, thumb_y, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 		alicorn.container_end(&ui)
