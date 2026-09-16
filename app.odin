@@ -66,6 +66,12 @@ Process_Monitor :: struct {
 	last_system_nice:   u64,
 	process_revision:  u64,
 	graph_revision:    u64,
+	visible_filter:    string,
+	visible_revision:  u64,
+	visible_sort:      Process_Sort,
+	visible_descending: bool,
+	visible_valid:     bool,
+	projection_rebuilds: u64,
 	scroll_y:          f32,
 	list_viewport_height: f32,
 	row_height:          f32,
@@ -117,6 +123,7 @@ process_monitor_destroy :: proc(app: ^Process_Monitor) {
 	}
 	delete(app.rows)
 	delete(app.visible)
+	if len(app.visible_filter) > 0 { delete(app.visible_filter) }
 	delete(app.previous_cpu)
 	delete(app.cpu_history)
 	app^ = {}
@@ -186,10 +193,15 @@ process_before :: proc(app: ^Process_Monitor, left, right: Process_Record) -> bo
 	return app.sort_descending ? !less && left.key.pid != right.key.pid : less
 }
 
-process_monitor_prepare_visible :: proc(app: ^Process_Monitor, filter: string) {
+process_monitor_prepare_visible :: proc(app: ^Process_Monitor) {
+	if app.visible_valid && app.visible_revision == app.process_revision &&
+		app.visible_filter == app.filter && app.visible_sort == app.sort &&
+		app.visible_descending == app.sort_descending {
+		return
+	}
 	clear(&app.visible)
 	for row, index in app.rows {
-		if contains_insensitive(row.name, filter) || contains_insensitive(row.identity, filter) {
+		if contains_insensitive(row.name, app.filter) || contains_insensitive(row.identity, app.filter) {
 			append(&app.visible, index)
 		}
 	}
@@ -204,6 +216,30 @@ process_monitor_prepare_visible :: proc(app: ^Process_Monitor, filter: string) {
 		}
 		app.visible[j] = item
 	}
+	if len(app.visible_filter) > 0 { delete(app.visible_filter) }
+	filter_copy, err := strings.clone(app.filter)
+	if err != nil {
+		app.visible_valid = false
+		return
+	}
+	app.visible_filter = filter_copy
+	app.visible_revision = app.process_revision
+	app.visible_sort = app.sort
+	app.visible_descending = app.sort_descending
+	app.visible_valid = true
+	app.projection_rebuilds += 1
+}
+
+process_monitor_graph_range :: proc(app: ^Process_Monitor) -> (latest, minimum, maximum: f32) {
+	if len(app.cpu_history) == 0 { return }
+	minimum = app.cpu_history[0]
+	maximum = app.cpu_history[0]
+	for sample in app.cpu_history {
+		if sample < minimum { minimum = sample }
+		if sample > maximum { maximum = sample }
+	}
+	latest = app.cpu_history[len(app.cpu_history)-1]
+	return
 }
 
 format_bytes :: proc(value: u64) -> string {
@@ -237,7 +273,7 @@ system_memory_label :: proc() -> string {
 process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logical_width, logical_height: f32, dpi_scale: f32) -> Monitor_Nodes {
 	ui, build := alicorn.begin_frame(rt)
 	if !build { return Monitor_Nodes{} }
-	process_monitor_prepare_visible(app, app.filter)
+	process_monitor_prepare_visible(app)
 	root_style := alicorn.Layout_Style{.Column, -1, -1, 0, -1, 0, -1, 0, 12, 6, .Stretch, true}
 	alicorn.container_begin(&ui, .Root, label="Process Monitor", style=root_style, color=alicorn.Color{0.035, 0.045, 0.065, 1})
 	alicorn.text(&ui, "Process Monitor / Alicorn dogfood")
@@ -254,13 +290,17 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	if graph_width > 1000 { graph_width = 1000 }
 	graph_color := alicorn.Color{0.055, 0.08, 0.13, 1}
 	graph_header_color := alicorn.Color{0.07, 0.11, 0.18, 1}
+	graph_latest, _, graph_max := process_monitor_graph_range(app)
 	alicorn.container_begin(&ui, .Container, label="cpu-graph", style=alicorn.Layout_Style{.Column, graph_width, 190, 0, -1, 0, -1, 0, 6, 6, .Stretch, false}, color=graph_color)
 	// These containers are layout-only, but the current public container API
 	// paints when no color is supplied. Use the intended graph colors so the
 	// default light fill cannot leak into the chart area.
 	alicorn.container_begin(&ui, .Container, label="cpu-graph-header", style=alicorn.Layout_Style{.Row, -1, 24, 0, -1, 0, -1, 0, 0, 8, .Stretch, false}, color=graph_header_color)
 	alicorn.text(&ui, "CPU history / GPU surface", style=alicorn.Layout_Style{.Row, 260, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, fmt.tprintf("Current CPU %.1f%%", app.cpu_percent), style=alicorn.Layout_Style{.Row, 180, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	// The graph is historical, not a second rendering of the summary value.
+	// Showing its latest and maximum samples makes a high earlier sample
+	// distinguishable from a current-CPU calculation error.
+	alicorn.text(&ui, fmt.tprintf("Latest %.1f%% / max %.1f%%", graph_latest*100, graph_max*100), style=alicorn.Layout_Style{.Row, 230, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.container_end(&ui)
 	alicorn.container_begin(&ui, .Container, label="cpu-graph-body", style=alicorn.Layout_Style{.Row, -1, 150, 0, -1, 0, -1, 0, 0, 4, .Stretch, false}, color=graph_color)
 	alicorn.container_begin(&ui, .Container, label="cpu-graph-axis", style=alicorn.Layout_Style{.Column, 42, 150, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}, color=graph_color)
@@ -311,7 +351,10 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	app.scroll_y = metrics.offset_y
 	first, last := metrics.first, metrics.last
 	alicorn.container_begin(&ui, .Container, label="process-table-body", style=alicorn.Layout_Style{.Row, table_body_width, list_height, 0, -1, 0, -1, 0, 6, 0, .Stretch, true})
-	alicorn.container_begin(&ui, .Virtual_List, label="process-list", style=alicorn.Layout_Style{.Column, table_list_width, list_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, scroll_offset_y=metrics.offset_y)
+	// `visible[first:]` has already skipped complete rows. Only apply the
+	// fractional remainder to the retained layout; using the full scroll
+	// offset here would count those skipped rows twice.
+	alicorn.container_begin(&ui, .Virtual_List, label="process-list", style=alicorn.Layout_Style{.Column, table_list_width, list_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, scroll_offset_y=metrics.leading_offset_y)
 	for position := first; position < last; position += 1 {
 		row := app.rows[app.visible[position]]
 		if !alicorn.component_begin(&ui, alicorn.key_pair(u64(row.key.pid), row.key.creation_time)) { continue }

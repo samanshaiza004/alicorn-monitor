@@ -66,6 +66,10 @@ main :: proc() {
 		}
 	}
 	host.Run(application, smoke)
+	graph_latest, graph_min, graph_max := process_monitor_graph_range(&app)
+	graph_latest_percent := graph_latest * 100
+	graph_min_percent := graph_min * 100
+	graph_max_percent := graph_max * 100
 	fmt.println(
 		"process_monitor PASS",
 		"samples", app.sample_count,
@@ -76,6 +80,12 @@ main :: proc() {
 		"identity_keys", len(app.previous_cpu),
 		"surface_updates", app.graph_revision,
 		"surface_frames", app.graph_revision,
+		"graph_points", len(app.cpu_history),
+		"graph_latest_percent", fmt.tprintf("%.1f", graph_latest_percent),
+		"graph_min_percent", fmt.tprintf("%.1f", graph_min_percent),
+		"graph_max_percent", fmt.tprintf("%.1f", graph_max_percent),
+		"graph_current_delta_percent", fmt.tprintf("%.1f", graph_latest_percent-app.cpu_percent),
+		"projection_rebuilds", app.projection_rebuilds,
 		"query_failures", app.query_failures,
 	)
 }

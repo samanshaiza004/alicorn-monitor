@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:strings"
 import alicorn "vendor/alicorn/runtime"
 
 Dogfood_Test_State :: struct {
@@ -16,6 +17,20 @@ dogfood_expect :: proc(state: ^Dogfood_Test_State, condition: bool, message: str
 
 dogfood_expect_filter :: proc(state: ^Dogfood_Test_State, app: ^Process_Monitor, expected: string, message: string) {
 	dogfood_expect(state, app.filter == expected, message)
+}
+
+dogfood_append_row :: proc(app: ^Process_Monitor, pid: u32, name: string) {
+	name_copy, name_err := strings.clone(name)
+	identity_copy, identity_err := strings.clone(fmt.tprintf("pid=%d", pid))
+	if name_err != nil || identity_err != nil {
+		if name_err == nil { delete(name_copy) }
+		if identity_err == nil { delete(identity_copy) }
+		return
+	}
+	append(&app.rows, Process_Record{
+		key=Process_Key{pid, u64(pid)}, identity=identity_copy, name=name_copy,
+		cpu_percent=f32(pid), working_set_bytes=u64(pid),
+	})
 }
 
 // process_monitor_run_dogfood_tests exercises the monitor's external side of
@@ -34,6 +49,18 @@ process_monitor_run_dogfood_tests :: proc() -> bool {
 	dogfood_expect(&state, scroll_app.scroll_y == 84, "wheel ticks use a native three-line scroll step")
 	process_monitor_scroll(&scroll_app, alicorn.Scroll_Event{ticks_y=-100})
 	dogfood_expect(&state, scroll_app.scroll_y == 2160, "scrolling clamps to the actual content and viewport extent")
+	projection_app := process_monitor_new()
+	defer process_monitor_destroy(&projection_app)
+	dogfood_append_row(&projection_app, 1, "alpha process")
+	dogfood_append_row(&projection_app, 2, "beta process")
+	projection_app.process_revision = 1
+	process_monitor_prepare_visible(&projection_app)
+	projection_rebuilds := projection_app.projection_rebuilds
+	process_monitor_prepare_visible(&projection_app)
+	dogfood_expect(&state, projection_app.projection_rebuilds == projection_rebuilds, "unchanged process projection is reused")
+	projection_app.filter, _ = strings.clone("alpha")
+	process_monitor_prepare_visible(&projection_app)
+	dogfood_expect(&state, projection_app.projection_rebuilds == projection_rebuilds+1 && len(projection_app.visible) == 1, "filter changes rebuild only the visible projection")
 	app := process_monitor_new()
 	rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 360})
 	// The callback adopts text allocated by the runtime, so destroy the app

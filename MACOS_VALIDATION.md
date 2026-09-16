@@ -11,7 +11,7 @@ passing build is not treated as proof of native behavior.
 | Monitor starting commit | `c6746cec03418f1ef763d99f97235d7463f6e189` |
 | Monitor branch | `port/macos-monitor-c6746ce` |
 | Pinned Alicorn starting commit | `3f1fcd76a8c1518bb6ba751f5bbde6da31d8880e` |
-| Validated Alicorn commit | `213d62c` (includes event fix `2b079fc` and SDL 3.4.16 policy) |
+| Validated Alicorn commit | `ba8d2d4` (includes event fix `2b079fc`, SDL 3.4.16 policy, and bounded virtual-list geometry) |
 | Host | MacBook Air 10,1, Apple M1, 8 cores, 8 GB |
 | macOS | 26.6.2 (25G83) |
 | Architecture | `arm64` / Apple Silicon |
@@ -65,6 +65,12 @@ The new Unix path is:
 ALICORN_ODIN=/Users/keina/Documents/odin-macos-arm64-nightly+2026-09-01/odin ./tools/run.sh --smoke
 ```
 
+The current candidate executable is:
+
+```text
+/Users/keina/dev/alicorn-monitor/out/alicorn-monitor-next
+```
+
 The validated run from the merged latest-master executable completed
 successfully:
 
@@ -72,7 +78,7 @@ successfully:
 sdl3_version 3 4 16
 gpu_driver_requested metal gpu_driver_selected metal
 SDL application PASS submissions 18 retired 18 max_frames_in_flight 2 wall_ns 3002049000 logical_resize_events 0 pixel_resize_events 1 text_input_events 0 composition_events 0 text_change_dispatches 0 text_changes 0 text_edit_key_events 0 text_navigation_key_events 0 text_selection_key_events 0 text_word_key_events 0 events_per_pump_max 2 oldest_event_age_max_ns 82665875 input_to_submit_p95_ns 85145292 input_to_submit_max_ns 276176459 text_mesh_rebuilds 10 text_mesh_cache_hits 8 text_vertex_uploads 10 frame_p95_ns 1496000 gpu_encode_ns 168399000 gpu_submit_ns 443000 fence_wait_ns 4354000 application_tick_max_ns 5083000 application_build_max_ns 28078000 gpu_encode_max_ns 31732000 fence_wait_max_ns 4337000
-process_monitor PASS samples 10 rows 377 cpu_percent 27.8 memory_used 7.8 GB memory_total 8.0 GB identity_keys 377 surface_updates 10 surface_frames 10 query_failures 1831
+process_monitor PASS samples 10 rows 355 cpu_percent 21.1 memory_used 7.8 GB memory_total 8.0 GB identity_keys 355 surface_updates 10 surface_frames 10 graph_points 512 graph_latest_percent 21.1 graph_min_percent 0.0 graph_max_percent 58.6 graph_current_delta_percent 0.0 projection_rebuilds 11 query_failures 2025
 ```
 
 This proves that the same application host creates a Retina window, selects
@@ -130,6 +136,10 @@ Metric meanings:
 | The visible bare SDL window became non-interactive on the physical Mac | `SDL_PollEvent` enters SDL's Cocoa pump, while the earlier Darwin workaround bypassed SDL's `NSApplication.sendEvent` activation/dispatch path | Darwin now calls `SDL_PumpEvents` once and drains the translated queue with `SDL_PeepEvents`; non-Darwin hosts retain `SDL_PollEvent` | The exact rebuilt Monitor run reported `WINDOW_FOCUS_GAINED`, then steady `app_active true key_window true sdl_input_focus true`, plus mouse, key, and text-input events. |
 | First sampler smoke aborted with an invalid free | A PID slice allocated with `context.temp_allocator` was deleted through the default allocator | Explicitly delete the temporary PID slice with `context.temp_allocator` | LLDB no longer observes the malloc abort; smoke exits 0. |
 | macOS had no native launcher | Only the PowerShell runner existed | Added executable `tools/run.sh`; Windows `tools/run.ps1` remains unchanged | `./tools/run.sh --smoke` passes. |
+| Darwin process names were clipped at the short command-name limit | The sampler read `pbi_comm` (`MAXCOMLEN`) even when the longer registered name was available | Prefer `pbi_name` and fall back to `pbi_comm` | Sampler output now includes names longer than 16 characters, including `AssetCacheLocatorService`. |
+| Virtual-list scrolling entered a large blank tail and skipped rows twice | Realized rows already started at `first`, while the container also applied the full scroll offset | Expose and apply only `leading_offset_y`; include scroll in the layout hash and dirty layout ancestors when child order changes | Alicorn virtual-list bounds tests pass at row-aligned and fractional offsets. |
+| Scrolling and other interaction rebuilds repeated the full process filter/sort projection | The monitor rebuilt `visible` on every application description build | Cache the projection by process revision, filter, sort, and direction | Monitor self-test passes; native diagnostics report projection rebuild count separately. |
+| CPU history could be mistaken for the current CPU value | The graph had no visible latest/max context | Add graph latest/max diagnostics and header context; retain the normalized sample invariant | Three native runs reported `graph_current_delta_percent 0.0`; graph maxima remained within 0–100%. |
 
 ## Latest native diagnostics
 
@@ -195,7 +205,8 @@ tick callback; no worker thread or direct runtime mutation was introduced.
 - Real macOS IME composition and OS candidate UI positioning remain unproven.
 - No separate 30–60 second performance sample or allocator telemetry was
   added. The latest bounded smoke showed 11 samples, 11 graph updates, and
-  bounded two-frame GPU retirement.
+  bounded two-frame GPU retirement. The current smoke also reports projection
+  rebuilds and graph latest/min/max values.
 - libproc is private/compatibility-sensitive on macOS.
 
 ## Recommendation
