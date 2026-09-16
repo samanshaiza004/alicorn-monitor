@@ -102,7 +102,13 @@ darwin_process_name :: proc(pid: i32) -> string {
 	if ret != size_of(info) { return "" }
 	// The SDK buffer is stack-local. Clone before returning; returning a string
 	// view into `info` makes names turn into stack garbage at the call site.
-	raw_name := string(cstring(raw_data(info.pbi_comm[:])))
+	// pbi_comm is the short (MAXCOMLEN) kernel command name. pbi_name is the
+	// longer registered process name and is what Activity Monitor-like views
+	// expect when it is available.
+	raw_name := string(cstring(raw_data(info.pbi_name[:])))
+	if len(raw_name) == 0 {
+		raw_name = string(cstring(raw_data(info.pbi_comm[:])))
+	}
 	name, err := strings.clone(raw_name)
 	if err != nil { return "" }
 	return name
