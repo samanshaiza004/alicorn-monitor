@@ -83,6 +83,8 @@ process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
 	elapsed_qpc := u64(0)
 	if app.last_qpc != 0 && now > app.last_qpc { elapsed_qpc = now - app.last_qpc }
 	app.last_qpc = now
+	app.queried_this_sample = 0
+	app.unavailable_this_sample = 0
 
 	for row in app.rows {
 		if len(row.identity) > 0 { delete(row.identity, app.persistent_allocator) }
@@ -128,12 +130,17 @@ process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
 					row.private_bytes = u64(counters.PrivateUsage)
 				}
 				append(&app.rows, row)
+				app.queried_this_sample += 1
 				next_cpu[key] = cpu_time
 				total_cpu += row.cpu_percent
+			} else {
+				app.query_failures += 1
+				app.unavailable_this_sample += 1
 			}
 			windows.CloseHandle(handle)
 		} else {
 			app.query_failures += 1
+			app.unavailable_this_sample += 1
 		}
 		status = windows.Process32NextW(snapshot, &entry)
 	}

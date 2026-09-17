@@ -170,6 +170,8 @@ process_monitor_system_memory :: proc(app: ^Process_Monitor) {
 
 process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
 	elapsed := time.tick_lap_time(&app.sample_tick)
+	app.queried_this_sample = 0
+	app.unavailable_this_sample = 0
 	// The list is a point-in-time snapshot; process churn between enumeration
 	// and querying is handled as normal.
 	pids, list_ok := darwin_process_list()
@@ -195,6 +197,7 @@ process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
 			// Processes can exit or become inaccessible between enumeration and
 			// querying. That is expected sampling churn, not a fatal error.
 			app.query_failures += 1
+			app.unavailable_this_sample += 1
 			continue
 		}
 
@@ -220,6 +223,7 @@ process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
 		row.working_set_bytes = rusage.ri_resident_size
 		row.private_bytes = rusage.ri_phys_footprint
 		append(&app.rows, row)
+		app.queried_this_sample += 1
 		next_cpu[key] = cpu_time
 	}
 
@@ -260,6 +264,6 @@ process_monitor_sampler_check :: proc() -> bool {
 			}
 		}
 	}
-	fmt.println("sampler_check PASS rows", len(app.rows), "identity_keys", len(app.previous_cpu), "query_failures", app.query_failures)
+	fmt.println("sampler_check PASS rows", len(app.rows), "identity_keys", len(app.previous_cpu), "queried_this_sample", app.queried_this_sample, "unavailable_this_sample", app.unavailable_this_sample, "query_failures", app.query_failures)
 	return true
 }

@@ -18,6 +18,11 @@ The current screen combines:
 - continuous fixed-height scrolling with a proportional position indicator;
 - Darwin process sampling keyed by PID plus `ri_proc_start_abstime`.
 
+Keyboard-only operation is part of the dogfood contract: `Tab`/`Shift+Tab`
+traverse active controls, while `Enter`/`Space` activate a focused button.
+The process summary reports rows successfully queried in the latest sample and
+adds an `unavailable` count when a process exited or could not be queried.
+
 ## Build
 
 Install Odin and initialize the pinned dependency:

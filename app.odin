@@ -49,7 +49,7 @@ TABLE_MEMORY_WIDTH :: 110
 
 SUMMARY_CPU_WIDTH       :: 150
 SUMMARY_MEMORY_WIDTH    :: 300
-SUMMARY_PROCESSES_WIDTH :: 170
+SUMMARY_PROCESSES_WIDTH :: 220
 
 // The root is a vertical flow with fixed-height controls and one growing
 // table body. Keep the two text labels explicit-height so the pre-layout
@@ -108,6 +108,8 @@ Process_Monitor :: struct {
 	disable_surface:   bool,
 	sample_count:      u64,
 	query_failures:    int,
+	queried_this_sample: int,
+	unavailable_this_sample: int,
 	input_debug:       bool,
 	last_pointer_events: u64,
 	qpc_frequency:     u64,
@@ -185,6 +187,25 @@ process_key_equal :: proc(a, b: Process_Key) -> bool {
 	return a.pid == b.pid && a.creation_time == b.creation_time
 }
 
+process_monitor_reconcile_selection :: proc(app: ^Process_Monitor) {
+	if !app.has_selected { return }
+	for row in app.rows {
+		if process_key_equal(app.selected, row.key) { return }
+	}
+	// Filtering and sorting preserve the snapshot row, so they preserve
+	// selection. A missing key means the process exited or became unavailable;
+	// clear the selection instead of leaving an invisible selected row behind.
+	app.selected = Process_Key{}
+	app.has_selected = false
+}
+
+process_monitor_process_summary :: proc(app: ^Process_Monitor) -> string {
+	if app.unavailable_this_sample > 0 {
+		return fmt.tprintf("Processes %d · %d unavailable", len(app.rows), app.unavailable_this_sample)
+	}
+	return fmt.tprintf("Processes %d", len(app.rows))
+}
+
 process_identity_string :: proc(key: Process_Key) -> string {
 	return fmt.tprintf("pid=%d;created=%d", key.pid, key.creation_time)
 }
@@ -228,6 +249,7 @@ process_before :: proc(app: ^Process_Monitor, left, right: Process_Record) -> bo
 }
 
 process_monitor_prepare_visible :: proc(app: ^Process_Monitor) {
+	process_monitor_reconcile_selection(app)
 	if app.visible_valid && app.visible_revision == app.process_revision &&
 		app.visible_filter == app.filter && app.visible_sort == app.sort &&
 		app.visible_descending == app.sort_descending {
@@ -339,7 +361,7 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	alicorn.container_begin(&ui, .Container, label="system-summary", style=header_style, color=alicorn.Color{0.08, 0.14, 0.24, 1})
 	alicorn.text(&ui, fmt.tprintf("CPU %.1f%%", app.cpu_percent), style=alicorn.Layout_Style{.Row, SUMMARY_CPU_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.text(&ui, fmt.tprintf("%s %s / %s", system_memory_label(), format_bytes(app.memory_used), format_bytes(app.memory_total)), style=alicorn.Layout_Style{.Row, SUMMARY_MEMORY_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, fmt.tprintf("Processes %d", len(app.rows)), style=alicorn.Layout_Style{.Row, SUMMARY_PROCESSES_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, process_monitor_process_summary(app), style=alicorn.Layout_Style{.Row, SUMMARY_PROCESSES_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.text(&ui, fmt.tprintf("Host ticks %.1f Hz", app.tick_hz), style=alicorn.Layout_Style{.Row, 170, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
 	alicorn.container_end(&ui)
 

@@ -69,6 +69,30 @@ process_monitor_run_dogfood_tests :: proc() -> bool {
 	projection_app.filter, _ = strings.clone("alpha")
 	process_monitor_prepare_visible(&projection_app)
 	dogfood_expect(&state, projection_app.projection_rebuilds == projection_rebuilds+1 && len(projection_app.visible) == 1, "filter changes rebuild only the visible projection")
+	if len(projection_app.filter) > 0 { delete(projection_app.filter) }
+	projection_app.filter = ""
+	projection_app.selected = projection_app.rows[1].key
+	projection_app.has_selected = true
+	projection_app.rows[0].cpu_percent = 90
+	projection_app.rows[1].cpu_percent = 1
+	projection_app.process_revision += 1
+	process_monitor_prepare_visible(&projection_app)
+	dogfood_expect(&state, projection_app.has_selected && process_key_equal(projection_app.selected, projection_app.rows[1].key), "selection follows process identity across live reorder")
+	projection_app.filter, _ = strings.clone("beta")
+	process_monitor_prepare_visible(&projection_app)
+	dogfood_expect(&state, projection_app.has_selected && process_key_equal(projection_app.selected, projection_app.rows[1].key), "selection survives filtering when the process remains in the snapshot")
+	if len(projection_app.filter) > 0 { delete(projection_app.filter) }
+	projection_app.filter = ""
+	for row in projection_app.rows {
+		if len(row.identity) > 0 { delete(row.identity) }
+		if len(row.name) > 0 { delete(row.name) }
+	}
+	clear(&projection_app.rows)
+	projection_app.process_revision += 1
+	process_monitor_prepare_visible(&projection_app)
+	dogfood_expect(&state, !projection_app.has_selected, "selection clears deterministically when its process disappears")
+	projection_app.unavailable_this_sample = 3
+	dogfood_expect(&state, process_monitor_process_summary(&projection_app) == "Processes 0 · 3 unavailable", "summary exposes unavailable process queries")
 	layout_app := process_monitor_new()
 	layout_rt := alicorn.new_runtime(alicorn.Rect{0, 0, 960, 720})
 	defer alicorn.destroy_runtime(&layout_rt)
@@ -95,6 +119,13 @@ process_monitor_run_dogfood_tests :: proc() -> bool {
 	field := app.filter_node
 	dogfood_expect(&state, field != 0 && rt.focused == field, "monitor filter must be the initially focused public text field")
 	if field != 0 {
+		sort_cpu := dogfood_node_by_label(&rt, "Sort CPU")
+		dogfood_expect(&state, sort_cpu != nil && alicorn.focus_traverse(&rt, .Next) == sort_cpu.id, "monitor Tab order must leave the filter at Sort CPU")
+		if sort_cpu != nil {
+			dogfood_expect(&state, alicorn.activate_focused(&rt), "monitor focused sort button must accept keyboard activation")
+			process_monitor_build(rawptr(&app), &rt, 640, 360, 1)
+			dogfood_expect(&state, app.sort == .CPU && !app.sort_descending, "monitor keyboard activation must reach the sort command")
+		}
 		change := alicorn.process_text_input(&rt, field, "alpha beta")
 		process_monitor_on_text_change(rawptr(&app), &rt, change)
 		if len(change.text) > 0 { delete(change.text, rt.persistent_allocator) }

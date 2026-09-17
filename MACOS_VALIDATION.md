@@ -12,7 +12,7 @@ behavior.
 | Monitor starting commit | `c6746cec03418f1ef763d99f97235d7463f6e189` |
 | Monitor branch | `port/macos-monitor-c6746ce` |
 | Pinned Alicorn starting commit | `3f1fcd76a8c1518bb6ba751f5bbde6da31d8880e` |
-| Validated Alicorn commit | `2cf4bc449af954a5c4daeaf0efc833b237eddcef` (current `master` pin; includes event fix `2b079fc`, SDL 3.4.16 policy, bounded virtual-list geometry, and subsequent runtime fixes) |
+| Validated Alicorn commit | `00278fb90261c2a2bf1034247bcb3f1ff4e27be3` (current `master` pin; includes the Retina surface fix, SDL 3.4.16 policy, bounded virtual-list geometry, and keyboard focus/activation closure work) |
 | Host | MacBook Air 10,1, Apple M1, 8 cores, 8 GB |
 | macOS | 26.6.2 (25G83) |
 | Architecture | `arm64` / Apple Silicon |
@@ -79,7 +79,7 @@ successfully:
 sdl3_version 3 4 16
 gpu_driver_requested metal gpu_driver_selected metal
 SDL application PASS submissions 18 retired 18 max_frames_in_flight 2 wall_ns 3002049000 logical_resize_events 0 pixel_resize_events 1 text_input_events 0 composition_events 0 text_change_dispatches 0 text_changes 0 text_edit_key_events 0 text_navigation_key_events 0 text_selection_key_events 0 text_word_key_events 0 events_per_pump_max 2 oldest_event_age_max_ns 82665875 input_to_submit_p95_ns 85145292 input_to_submit_max_ns 276176459 text_mesh_rebuilds 10 text_mesh_cache_hits 8 text_vertex_uploads 10 frame_p95_ns 1496000 gpu_encode_ns 168399000 gpu_submit_ns 443000 fence_wait_ns 4354000 application_tick_max_ns 5083000 application_build_max_ns 28078000 gpu_encode_max_ns 31732000 fence_wait_max_ns 4337000
-process_monitor PASS samples 10 rows 355 cpu_percent 21.1 memory_used 7.8 GB memory_total 8.0 GB identity_keys 355 surface_updates 10 surface_frames 10 graph_points 512 graph_latest_percent 21.1 graph_min_percent 0.0 graph_max_percent 58.6 graph_current_delta_percent 0.0 projection_rebuilds 11 query_failures 2025
+process_monitor PASS samples 10 rows 355 cpu_percent 21.1 memory_used 7.8 GB memory_total 8.0 GB identity_keys 355 queried_this_sample 355 unavailable_this_sample 0 surface_updates 10 surface_frames 10 graph_points 512 graph_latest_percent 21.1 graph_min_percent 0.0 graph_max_percent 58.6 graph_current_delta_percent 0.0 projection_rebuilds 11 query_failures 2025
 ```
 
 This proves that the same application host creates a Retina window, selects
@@ -141,6 +141,8 @@ Metric meanings:
 | Virtual-list scrolling entered a large blank tail and skipped rows twice | Realized rows already started at `first`, while the container also applied the full scroll offset | Expose and apply only `leading_offset_y`; include scroll in the layout hash and dirty layout ancestors when child order changes | Alicorn virtual-list bounds tests pass at row-aligned and fractional offsets. |
 | Scrolling and other interaction rebuilds repeated the full process filter/sort projection | The monitor rebuilt `visible` on every application description build | Cache the projection by process revision, filter, sort, and direction | Monitor self-test passes; native diagnostics report projection rebuild count separately. |
 | CPU history could be mistaken for the current CPU value | The graph had no visible latest/max context | Add graph latest/max diagnostics and header context; retain the normalized sample invariant | Three native runs reported `graph_current_delta_percent 0.0`; graph maxima remained within 0–100%. |
+| Keyboard users had no generic focus traversal or button activation path | The native host exposed app commands but not desktop focus navigation | Alicorn now provides retained-order `Tab`/`Shift+Tab` traversal, skips disabled nodes, and routes `Enter`/`Space` through one-shot button activation with a focused paint state | Alicorn foundation tests and Monitor dogfood tests pass; Monitor exercises filter → Sort CPU traversal and activation. |
+| Process count did not distinguish visible rows from query failures | Darwin and Windows samplers only retained a cumulative failure counter | Track successful and unavailable queries per sample, show the unavailable count when nonzero, and clear selection only when its `Process_Key` disappears from the snapshot | Darwin sampler check reported `queried_this_sample 430 unavailable_this_sample 227`; no application abort. |
 
 ## Latest native diagnostics
 
@@ -177,6 +179,28 @@ sdl_event KEY_DOWN ...
 sdl_event TEXT_INPUT text h
 ```
 
+## Closure-pass checks
+
+The current closure build pins Alicorn
+`00278fb90261c2a2bf1034247bcb3f1ff4e27be3` and was built as
+`/Users/keina/dev/alicorn-monitor/out/alicorn-monitor-keyboard`. The following
+checks pass against that exact submodule:
+
+```text
+./out/alicorn-monitor-keyboard --self-test
+    Alicorn monitor dogfood tests: PASS
+
+./out/alicorn-monitor-keyboard --sample-check
+    rows 430; identity_keys 430; queried_this_sample 430;
+    unavailable_this_sample 227; query_failures 227
+```
+
+The monitor test covers stable selection through a live sort reorder and a
+filter change, deterministic clearing after the selected `Process_Key` leaves
+the snapshot, and keyboard activation of the Sort CPU control. The sampler
+check confirms that transient/inaccessible Darwin queries are counted and
+skipped.
+
 ## Retina, lifecycle, text, and thread observations
 
 The Alicorn foundation fixture measured logical 640 x 480 against physical
@@ -209,6 +233,9 @@ tick callback; no worker thread or direct runtime mutation was introduced.
   bounded two-frame GPU retirement. The current smoke also reports projection
   rebuilds and graph latest/min/max values.
 - libproc is private/compatibility-sensitive on macOS.
+- A physical-Mac keyboard-only sweep of Tab/Shift-Tab, Enter/Space, selection,
+  and pause/resume is still required; the automated tests cover the public
+  runtime and Monitor seams but do not synthesize real SDL keyboard events.
 
 ## Recommendation
 
@@ -216,7 +243,7 @@ tick callback; no worker thread or direct runtime mutation was introduced.
 
 The physical Apple Silicon session proves the current Alicorn renderer,
 Metal selection, Retina contract, real process sampling, and bounded GPU host
-behavior. Automated evidence removes the prior main-thread SDL/Cocoa stall;
-the exact corrected executable still needs a human interaction pass before
-this branch can be called cross-platform dogfood-ready. Keep this branch at
-**REVISE** pending that pass.
+behavior. The closure build adds tested keyboard traversal/activation and
+truthful process availability accounting. Keep the overall recommendation at
+**REVISE** until the physical-Mac keyboard-only and resize/soak sweeps are
+performed against `/Users/keina/dev/alicorn-monitor/out/alicorn-monitor-keyboard`.

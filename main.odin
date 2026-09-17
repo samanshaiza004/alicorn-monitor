@@ -78,6 +78,8 @@ main :: proc() {
 		"memory_used", format_bytes(app.memory_used),
 		"memory_total", format_bytes(app.memory_total),
 		"identity_keys", len(app.previous_cpu),
+		"queried_this_sample", app.queried_this_sample,
+		"unavailable_this_sample", app.unavailable_this_sample,
 		"surface_updates", app.graph_revision,
 		"surface_frames", app.graph_revision,
 		"graph_points", len(app.cpu_history),
