@@ -5,23 +5,25 @@ import "core:os"
 import alicorn "vendor/alicorn/runtime"
 import host "vendor/alicorn/native/sdl_gpu"
 
-monitor_key_from_host :: proc(key: host.Application_Key) -> Monitor_Key {
+monitor_key_from_host :: proc(key: host.Application_Key) -> (Monitor_Key, bool) {
 	switch key {
-	case .Up: return .Up
-	case .Down: return .Down
-	case .Page_Up: return .Page_Up
-	case .Page_Down: return .Page_Down
-	case .Command_1: return .Sort_CPU
-	case .Command_2: return .Sort_Memory
-	case .Command_3: return .Sort_Name
-	case .Toggle: return .Toggle_Pause
+	case .Up: return .Up, true
+	case .Down: return .Down, true
+	case .Page_Up: return .Page_Up, true
+	case .Page_Down: return .Page_Down, true
+	case .Command_1: return .Sort_CPU, true
+	case .Command_2: return .Sort_Memory, true
+	case .Command_3: return .Sort_Name, true
+	case .Toggle: return .Toggle_Pause, true
 	}
-	return .Toggle_Pause
+	return {}, false
 }
 
 monitor_on_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Application_Key) -> bool {
 	app := cast(^Process_Monitor)state
-	return process_monitor_handle_key(app, monitor_key_from_host(key))
+	monitor_key, ok := monitor_key_from_host(key)
+	if !ok { return false }
+	return process_monitor_handle_key(app, monitor_key)
 }
 
 main :: proc() {
