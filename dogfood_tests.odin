@@ -48,15 +48,19 @@ process_monitor_run_dogfood_tests :: proc() -> bool {
 	state := Dogfood_Test_State{}
 	scroll_app := process_monitor_new()
 	defer process_monitor_destroy(&scroll_app)
-	scroll_app.list_viewport_height = 240
-	scroll_app.row_height = 24
-	for i := 0; i < 100; i += 1 { append(&scroll_app.visible, i) }
-	process_monitor_scroll(&scroll_app, alicorn.Scroll_Event{delta_y=-0.5})
-	dogfood_expect(&state, scroll_app.scroll_y == 12, "precise scroll deltas preserve fractional pixel movement")
-	process_monitor_scroll(&scroll_app, alicorn.Scroll_Event{ticks_y=-1})
-	dogfood_expect(&state, scroll_app.scroll_y == 84, "wheel ticks use a native three-line scroll step")
-	process_monitor_scroll(&scroll_app, alicorn.Scroll_Event{ticks_y=-100})
-	dogfood_expect(&state, scroll_app.scroll_y == 2160, "scrolling clamps to the actual content and viewport extent")
+	scroll_rt := alicorn.new_runtime(alicorn.Rect{0, 0, 960, 720})
+	defer alicorn.destroy_runtime(&scroll_rt)
+	for i := 0; i < 100; i += 1 { dogfood_append_row(&scroll_app, u32(i+1), fmt.tprintf("process %d", i+1)) }
+	scroll_app.process_revision = 1
+	process_monitor_build(rawptr(&scroll_app), &scroll_rt, 960, 720, 1)
+	scroll_node := scroll_rt.nodes[scroll_app.scroll_node]
+	precise := alicorn.process_scroll(&scroll_rt, alicorn.Scroll_Event{delta_y=-0.5, x=scroll_node.bounds.x+4, y=scroll_node.bounds.y+4})
+	dogfood_expect(&state, precise && alicorn.scroll_region_offset(&scroll_rt, scroll_app.scroll_node) == 12, "retained scroll regions preserve fractional wheel movement")
+	_ = alicorn.process_scroll(&scroll_rt, alicorn.Scroll_Event{ticks_y=-1, x=scroll_node.bounds.x+4, y=scroll_node.bounds.y+4})
+	dogfood_expect(&state, alicorn.scroll_region_offset(&scroll_rt, scroll_app.scroll_node) == 12, "precise deltas remain authoritative over coarse wheel ticks")
+	_ = alicorn.scroll_region_set_offset(&scroll_rt, scroll_app.scroll_node, 99999)
+	state_after_clamp := alicorn.scroll_region_state(&scroll_rt, scroll_app.scroll_node)
+	dogfood_expect(&state, alicorn.scroll_region_offset(&scroll_rt, scroll_app.scroll_node) == state_after_clamp.max_scroll_y, "retained scrolling clamps to content minus the resolved viewport")
 	projection_app := process_monitor_new()
 	defer process_monitor_destroy(&projection_app)
 	dogfood_append_row(&projection_app, 1, "alpha process")

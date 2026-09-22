@@ -95,9 +95,6 @@ Process_Monitor :: struct {
 	visible_descending: bool,
 	visible_valid:     bool,
 	projection_rebuilds: u64,
-	scroll_y:          f32,
-	list_viewport_height: f32,
-	row_height:          f32,
 	sort:              Process_Sort,
 	sort_descending:   bool,
 	selected:          Process_Key,
@@ -120,6 +117,7 @@ Process_Monitor :: struct {
 	tick_time_valid:   bool,
 	tick_hz:           f32,
 	filter_node:       alicorn.Node_ID,
+	scroll_node:       alicorn.Node_ID,
 	surface_node:      alicorn.Node_ID,
 }
 
@@ -326,43 +324,19 @@ system_memory_label :: proc() -> string {
 	return "System memory"
 }
 
-// The runtime resolves the growing table body during layout, while the
-// monitor must know the viewport before it can select the realized rows. This
-// mirrors the root's fixed children and subtracts the table body's padding so
-// the virtual list and scrollbar use its actual inner height.
-process_monitor_list_height :: proc(logical_height, row_height: f32) -> f32 {
-	fixed_height := f32(
-		2*MONITOR_ROOT_PADDING +
-		MONITOR_ROOT_CHILD_GAPS*MONITOR_ROOT_GAP +
-		MONITOR_TITLE_HEIGHT +
-		MONITOR_SUMMARY_HEIGHT +
-		MONITOR_GRAPH_HEIGHT +
-		MONITOR_FILTER_LABEL_HEIGHT +
-		MONITOR_FILTER_HEIGHT +
-		MONITOR_SORT_HEIGHT +
-		MONITOR_TABLE_HEADER_HEIGHT,
-	)
-	body_height := logical_height - fixed_height
-	minimum_body_height := f32(2*MONITOR_TABLE_BODY_PADDING) + row_height
-	if body_height < minimum_body_height { body_height = minimum_body_height }
-	list_height := body_height - f32(2*MONITOR_TABLE_BODY_PADDING)
-	if list_height < row_height { list_height = row_height }
-	return list_height
-}
-
 process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logical_width, logical_height: f32, dpi_scale: f32) -> Monitor_Nodes {
 	ui, build := alicorn.begin_frame(rt)
 	if !build { return Monitor_Nodes{} }
 	process_monitor_prepare_visible(app)
-	root_style := alicorn.Layout_Style{.Column, -1, -1, 0, -1, 0, -1, 0, MONITOR_ROOT_PADDING, MONITOR_ROOT_GAP, .Stretch, true}
+	root_style := alicorn.layout_style(padding=MONITOR_ROOT_PADDING, gap=MONITOR_ROOT_GAP, clip=true)
 	alicorn.container_begin(&ui, .Root, label="Process Monitor", style=root_style, color=alicorn.Color{0.035, 0.045, 0.065, 1})
-	alicorn.text(&ui, "Process Monitor / Alicorn dogfood", style=alicorn.Layout_Style{.Column, -1, MONITOR_TITLE_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	header_style := alicorn.Layout_Style{.Row, -1, MONITOR_SUMMARY_HEIGHT, 0, -1, 0, -1, 0, 0, 8, .Stretch, false}
+	alicorn.text(&ui, "Process Monitor / Alicorn dogfood", style=alicorn.layout_style(height=MONITOR_TITLE_HEIGHT))
+	header_style := alicorn.layout_style(.Row, height=MONITOR_SUMMARY_HEIGHT, gap=8)
 	alicorn.container_begin(&ui, .Container, label="system-summary", style=header_style, color=alicorn.Color{0.08, 0.14, 0.24, 1})
-	alicorn.text(&ui, fmt.tprintf("CPU %.1f%%", app.cpu_percent), style=alicorn.Layout_Style{.Row, SUMMARY_CPU_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, fmt.tprintf("%s %s / %s", system_memory_label(), format_bytes(app.memory_used), format_bytes(app.memory_total)), style=alicorn.Layout_Style{.Row, SUMMARY_MEMORY_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, process_monitor_process_summary(app), style=alicorn.Layout_Style{.Row, SUMMARY_PROCESSES_WIDTH, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, fmt.tprintf("Host ticks %.1f Hz", app.tick_hz), style=alicorn.Layout_Style{.Row, 170, 28, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, fmt.tprintf("CPU %.1f%%", app.cpu_percent), style=alicorn.layout_style(.Row, width=SUMMARY_CPU_WIDTH, height=28))
+	alicorn.text(&ui, fmt.tprintf("%s %s / %s", system_memory_label(), format_bytes(app.memory_used), format_bytes(app.memory_total)), style=alicorn.layout_style(.Row, width=SUMMARY_MEMORY_WIDTH, height=28))
+	alicorn.text(&ui, process_monitor_process_summary(app), style=alicorn.layout_style(.Row, width=SUMMARY_PROCESSES_WIDTH, height=28))
+	alicorn.text(&ui, fmt.tprintf("Host ticks %.1f Hz", app.tick_hz), style=alicorn.layout_style(.Row, width=170, height=28))
 	alicorn.container_end(&ui)
 
 	graph_width := logical_width - 24
@@ -371,36 +345,36 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	graph_color := alicorn.Color{0.055, 0.08, 0.13, 1}
 	graph_header_color := alicorn.Color{0.07, 0.11, 0.18, 1}
 	graph_latest, _, graph_max := process_monitor_graph_range(app)
-	alicorn.container_begin(&ui, .Container, label="cpu-graph", style=alicorn.Layout_Style{.Column, graph_width, MONITOR_GRAPH_HEIGHT, 0, -1, 0, -1, 0, 6, 6, .Stretch, false}, color=graph_color)
+	alicorn.container_begin(&ui, .Container, label="cpu-graph", style=alicorn.layout_style(width=graph_width, height=MONITOR_GRAPH_HEIGHT, padding=6, gap=6), color=graph_color)
 	// These containers are layout-only, but the current public container API
 	// paints when no color is supplied. Use the intended graph colors so the
 	// default light fill cannot leak into the chart area.
-	alicorn.container_begin(&ui, .Container, label="cpu-graph-header", style=alicorn.Layout_Style{.Row, -1, 24, 0, -1, 0, -1, 0, 0, 8, .Stretch, false}, color=graph_header_color)
-	alicorn.text(&ui, "CPU history / GPU surface", style=alicorn.Layout_Style{.Row, 260, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.container_begin(&ui, .Container, label="cpu-graph-header", style=alicorn.layout_style(.Row, height=24, gap=8), color=graph_header_color)
+	alicorn.text(&ui, "CPU history / GPU surface", style=alicorn.layout_style(.Row, width=260, height=24))
 	// The graph is historical, not a second rendering of the summary value.
 	// Showing its latest and maximum samples makes a high earlier sample
 	// distinguishable from a current-CPU calculation error.
-	alicorn.text(&ui, fmt.tprintf("Latest %.1f%% / max %.1f%%", graph_latest*100, graph_max*100), style=alicorn.Layout_Style{.Row, 230, 24, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, fmt.tprintf("Latest %.1f%% / max %.1f%%", graph_latest*100, graph_max*100), style=alicorn.layout_style(.Row, width=230, height=24))
 	alicorn.container_end(&ui)
-	alicorn.container_begin(&ui, .Container, label="cpu-graph-body", style=alicorn.Layout_Style{.Row, -1, 150, 0, -1, 0, -1, 0, 0, 4, .Stretch, false}, color=graph_color)
-	alicorn.container_begin(&ui, .Container, label="cpu-graph-axis", style=alicorn.Layout_Style{.Column, 42, 150, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}, color=graph_color)
-	alicorn.text(&ui, "100%", style=alicorn.Layout_Style{.Column, 42, 50, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "50%", style=alicorn.Layout_Style{.Column, 42, 50, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "0%", style=alicorn.Layout_Style{.Column, 42, 50, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.container_begin(&ui, .Container, label="cpu-graph-body", style=alicorn.layout_style(.Row, height=150, gap=4), color=graph_color)
+	alicorn.container_begin(&ui, .Container, label="cpu-graph-axis", style=alicorn.layout_style(width=42, height=150), color=graph_color)
+	alicorn.text(&ui, "100%", style=alicorn.layout_style(width=42, height=50))
+	alicorn.text(&ui, "50%", style=alicorn.layout_style(width=42, height=50))
+	alicorn.text(&ui, "0%", style=alicorn.layout_style(width=42, height=50))
 	alicorn.container_end(&ui)
 	surface_width := graph_width - 58
 	if surface_width < 160 { surface_width = 160 }
 	surface := alicorn.gpu_surface(&ui, "cpu-history", app.graph_revision, alicorn.Rect{0, 0, surface_width, 150}, int(surface_width*dpi_scale), int(150*dpi_scale), dpi_scale)
 	alicorn.container_end(&ui)
 	alicorn.container_end(&ui)
-	alicorn.text(&ui, fmt.tprintf("Filter (%d matching)", len(app.visible)), style=alicorn.Layout_Style{.Column, -1, MONITOR_FILTER_LABEL_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	filter_id := alicorn.text_field(&ui, app.filter, style=alicorn.Layout_Style{.Column, -1, MONITOR_FILTER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.text(&ui, fmt.tprintf("Filter (%d matching)", len(app.visible)), style=alicorn.layout_style(height=MONITOR_FILTER_LABEL_HEIGHT))
+	filter_id := alicorn.text_field(&ui, app.filter, style=alicorn.layout_style(height=MONITOR_FILTER_HEIGHT))
 
-	alicorn.container_begin(&ui, .Container, label="sort-controls", style=alicorn.Layout_Style{.Row, -1, MONITOR_SORT_HEIGHT, 0, -1, 0, -1, 0, 6, 6, .Stretch, false}, color=alicorn.Color{0.06, 0.09, 0.14, 1})
-	clicked_cpu := alicorn.button(&ui, "Sort CPU", key=alicorn.key_string("sort-cpu"), state=alicorn.Button_State{selected=app.sort == .CPU}, style=alicorn.Layout_Style{.Row, 110, 28, 0, -1, 0, -1, 0, 0, 4, .Stretch, false})
-	clicked_memory := alicorn.button(&ui, "Sort Memory", key=alicorn.key_string("sort-memory"), state=alicorn.Button_State{selected=app.sort == .Memory}, style=alicorn.Layout_Style{.Row, 125, 28, 0, -1, 0, -1, 0, 0, 4, .Stretch, false})
-	clicked_name := alicorn.button(&ui, "Sort Name", key=alicorn.key_string("sort-name"), state=alicorn.Button_State{selected=app.sort == .Name}, style=alicorn.Layout_Style{.Row, 110, 28, 0, -1, 0, -1, 0, 0, 4, .Stretch, false})
-	clicked_pause := alicorn.button(&ui, "Pause / Resume", key=alicorn.key_string("pause"), state=alicorn.Button_State{selected=app.paused}, style=alicorn.Layout_Style{.Row, 145, 28, 0, -1, 0, -1, 0, 0, 4, .Stretch, false})
+	alicorn.container_begin(&ui, .Container, label="sort-controls", style=alicorn.layout_style(.Row, height=MONITOR_SORT_HEIGHT, padding=6, gap=6), color=alicorn.Color{0.06, 0.09, 0.14, 1})
+	clicked_cpu := alicorn.button(&ui, "Sort CPU", key=alicorn.key_string("sort-cpu"), state=alicorn.Button_State{selected=app.sort == .CPU}, style=alicorn.layout_style(.Row, width=110, height=28, gap=4))
+	clicked_memory := alicorn.button(&ui, "Sort Memory", key=alicorn.key_string("sort-memory"), state=alicorn.Button_State{selected=app.sort == .Memory}, style=alicorn.layout_style(.Row, width=125, height=28, gap=4))
+	clicked_name := alicorn.button(&ui, "Sort Name", key=alicorn.key_string("sort-name"), state=alicorn.Button_State{selected=app.sort == .Name}, style=alicorn.layout_style(.Row, width=110, height=28, gap=4))
+	clicked_pause := alicorn.button(&ui, "Pause / Resume", key=alicorn.key_string("pause"), state=alicorn.Button_State{selected=app.paused}, style=alicorn.layout_style(.Row, width=145, height=28, gap=4))
 	controls_changed := clicked_cpu || clicked_memory || clicked_name || clicked_pause
 	if clicked_cpu { app.sort = .CPU; app.sort_descending = !app.sort_descending }
 	if clicked_memory { app.sort = .Memory; app.sort_descending = !app.sort_descending }
@@ -414,39 +388,40 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	table_scrollbar_width: f32 = 14
 	table_list_width := table_body_width - table_scrollbar_width - 6
 	if table_list_width < 120 { table_list_width = 120 }
-	alicorn.container_begin(&ui, .Container, label="process-table-header", style=alicorn.Layout_Style{.Row, table_list_width, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}, color=alicorn.Color{0.08, 0.11, 0.16, 1})
-	alicorn.text(&ui, "", style=alicorn.Layout_Style{.Row, TABLE_MARKER_WIDTH, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "PID", style=alicorn.Layout_Style{.Row, TABLE_PID_WIDTH, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "PROCESS", style=alicorn.Layout_Style{.Row, -1, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 1, 0, 0, .Stretch, false})
-	alicorn.text(&ui, "CPU", style=alicorn.Layout_Style{.Row, TABLE_CPU_WIDTH, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, process_memory_primary_label(), style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-	alicorn.text(&ui, process_memory_secondary_label(), style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, MONITOR_TABLE_HEADER_HEIGHT, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+	alicorn.container_begin(&ui, .Container, label="process-table-header", style=alicorn.layout_style(.Row, width=table_list_width, height=MONITOR_TABLE_HEADER_HEIGHT), color=alicorn.Color{0.08, 0.11, 0.16, 1})
+	alicorn.text(&ui, "", style=alicorn.layout_style(.Row, width=TABLE_MARKER_WIDTH, height=MONITOR_TABLE_HEADER_HEIGHT))
+	alicorn.text(&ui, "PID", style=alicorn.layout_style(.Row, width=TABLE_PID_WIDTH, height=MONITOR_TABLE_HEADER_HEIGHT))
+	alicorn.text(&ui, "PROCESS", style=alicorn.layout_style(.Row, height=MONITOR_TABLE_HEADER_HEIGHT, grow=1))
+	alicorn.text(&ui, "CPU", style=alicorn.layout_style(.Row, width=TABLE_CPU_WIDTH, height=MONITOR_TABLE_HEADER_HEIGHT))
+	alicorn.text(&ui, process_memory_primary_label(), style=alicorn.layout_style(.Row, width=TABLE_MEMORY_WIDTH, height=MONITOR_TABLE_HEADER_HEIGHT))
+	alicorn.text(&ui, process_memory_secondary_label(), style=alicorn.layout_style(.Row, width=TABLE_MEMORY_WIDTH, height=MONITOR_TABLE_HEADER_HEIGHT))
 	alicorn.container_end(&ui)
 	row_height: f32 = 24
-	list_height := process_monitor_list_height(logical_height, row_height)
-	app.list_viewport_height = list_height
-	app.row_height = row_height
-	metrics := alicorn.virtual_list_metrics(len(app.visible), app.scroll_y, list_height, row_height)
-	app.scroll_y = metrics.offset_y
-	first, last := metrics.first, metrics.last
-	alicorn.container_begin(&ui, .Container, label="process-table-body", style=alicorn.Layout_Style{.Row, table_body_width, -1, 0, -1, 0, -1, 1, MONITOR_TABLE_BODY_PADDING, 0, .Stretch, true})
-	// `visible[first:]` has already skipped complete rows. Only apply the
-	// fractional remainder to the retained layout; using the full scroll
-	// offset here would count those skipped rows twice.
-	alicorn.container_begin(&ui, .Virtual_List, label="process-list", style=alicorn.Layout_Style{.Column, table_list_width, -1, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, scroll_offset_y=metrics.offset_y, layout_scroll_offset_y=metrics.leading_offset_y)
-	for position := first; position < last; position += 1 {
+	alicorn.container_begin(&ui, .Container, label="process-table-body", style=alicorn.layout_style(.Row, width=table_body_width, grow=1, padding=MONITOR_TABLE_BODY_PADDING, clip=true))
+	process_list := alicorn.virtual_list_begin(
+		&ui,
+		len(app.visible),
+		row_height,
+		key=alicorn.key_string("process-scroll"),
+		style=alicorn.layout_style(grow=1, clip=true),
+		content_width=table_list_width,
+		label="process-list",
+		axes=.Vertical,
+	)
+	app.scroll_node = process_list.scroll.id
+	for position := process_list.first; position < process_list.last; position += 1 {
 		row := app.rows[app.visible[position]]
 		if !alicorn.component_begin(&ui, alicorn.key_pair(u64(row.key.pid), row.key.creation_time)) { continue }
-		row_style := alicorn.Layout_Style{.Row, -1, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}
+		row_style := alicorn.layout_style(.Row, height=row_height, clip=true)
 		alicorn.container_begin(&ui, .Container, label="process-row", style=row_style)
 		selected := app.has_selected && process_key_equal(app.selected, row.key)
 		marker := selected ? ">" : ""
-		clicked_marker := alicorn.button(&ui, marker, key=alicorn.key_string("marker"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, TABLE_MARKER_WIDTH, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-		clicked_pid := alicorn.button(&ui, fmt.tprintf("%d", row.key.pid), key=alicorn.key_string("pid"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, TABLE_PID_WIDTH, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-		clicked_row_name := alicorn.button(&ui, row.name, key=alicorn.key_string("name"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, -1, row_height, 0, -1, 0, -1, 1, 0, 0, .Stretch, true})
-		clicked_cpu := alicorn.button(&ui, fmt.tprintf("%.1f%%", row.cpu_percent), key=alicorn.key_string("cpu"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, TABLE_CPU_WIDTH, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-		clicked_ws := alicorn.button(&ui, format_bytes(row.working_set_bytes), key=alicorn.key_string("working-set"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
-		clicked_private := alicorn.button(&ui, format_bytes(row.private_bytes), key=alicorn.key_string("private"), state=alicorn.Button_State{selected=selected}, style=alicorn.Layout_Style{.Row, TABLE_MEMORY_WIDTH, row_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+		clicked_marker := alicorn.button(&ui, marker, state=alicorn.Button_State{selected=selected}, style=alicorn.layout_style(.Row, width=TABLE_MARKER_WIDTH, height=row_height))
+		clicked_pid := alicorn.button(&ui, fmt.tprintf("%d", row.key.pid), state=alicorn.Button_State{selected=selected}, style=alicorn.layout_style(.Row, width=TABLE_PID_WIDTH, height=row_height))
+		clicked_row_name := alicorn.button(&ui, row.name, state=alicorn.Button_State{selected=selected}, style=alicorn.layout_style(.Row, height=row_height, grow=1, clip=true))
+		clicked_cpu := alicorn.button(&ui, fmt.tprintf("%.1f%%", row.cpu_percent), state=alicorn.Button_State{selected=selected}, style=alicorn.layout_style(.Row, width=TABLE_CPU_WIDTH, height=row_height))
+		clicked_ws := alicorn.button(&ui, format_bytes(row.working_set_bytes), state=alicorn.Button_State{selected=selected}, style=alicorn.layout_style(.Row, width=TABLE_MEMORY_WIDTH, height=row_height))
+		clicked_private := alicorn.button(&ui, format_bytes(row.private_bytes), state=alicorn.Button_State{selected=selected}, style=alicorn.layout_style(.Row, width=TABLE_MEMORY_WIDTH, height=row_height))
 		if clicked_marker || clicked_pid || clicked_row_name || clicked_cpu || clicked_ws || clicked_private {
 			app.selected = row.key
 			app.has_selected = true
@@ -454,8 +429,9 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 		alicorn.container_end(&ui)
 		alicorn.component_end(&ui)
 	}
-	alicorn.container_end(&ui)
-	content_height := metrics.content_height
+	alicorn.virtual_list_end(&ui, process_list)
+	content_height := process_list.scroll.content_height
+	list_height := process_list.scroll.viewport_height
 	thumb_height := list_height
 	if content_height > list_height && content_height > 0 {
 		thumb_height = list_height * list_height / content_height
@@ -464,13 +440,13 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	}
 	thumb_travel := list_height - thumb_height
 	thumb_y: f32 = 0
-	if metrics.max_scroll_y > 0 { thumb_y = thumb_travel * metrics.offset_y / metrics.max_scroll_y }
-	alicorn.container_begin(&ui, .Container, label="process-scrollbar", style=alicorn.Layout_Style{.Column, table_scrollbar_width, -1, 0, -1, 0, -1, 0, 0, 0, .Stretch, true}, color=alicorn.Color{0.045, 0.065, 0.10, 1})
+	if process_list.scroll.max_scroll_y > 0 { thumb_y = thumb_travel * process_list.scroll.offset_y / process_list.scroll.max_scroll_y }
+	alicorn.container_begin(&ui, .Container, label="process-scrollbar", style=alicorn.layout_style(width=table_scrollbar_width, grow=1, clip=true), color=alicorn.Color{0.045, 0.065, 0.10, 1})
 	if thumb_y > 0 {
-		alicorn.container_begin(&ui, .Container, label="scrollbar-spacer", style=alicorn.Layout_Style{.Column, table_scrollbar_width, thumb_y, 0, -1, 0, -1, 0, 0, 0, .Stretch, false})
+		alicorn.container_begin(&ui, .Container, label="scrollbar-spacer", style=alicorn.layout_style(width=table_scrollbar_width, height=thumb_y))
 		alicorn.container_end(&ui)
 	}
-	alicorn.container_begin(&ui, .Container, label="scrollbar-thumb", style=alicorn.Layout_Style{.Column, table_scrollbar_width, thumb_height, 0, -1, 0, -1, 0, 0, 0, .Stretch, false}, color=alicorn.Color{0.20, 0.42, 0.68, 1})
+	alicorn.container_begin(&ui, .Container, label="scrollbar-thumb", style=alicorn.layout_style(width=table_scrollbar_width, height=thumb_height), color=alicorn.Color{0.20, 0.42, 0.68, 1})
 	alicorn.container_end(&ui)
 	alicorn.container_end(&ui)
 	alicorn.container_end(&ui)
@@ -518,12 +494,6 @@ process_monitor_on_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, chan
 	if change.changed { alicorn.invalidate_root(rt, "process monitor filter changed") }
 }
 
-process_monitor_on_scroll :: proc(state: rawptr, rt: ^alicorn.Runtime, event: alicorn.Scroll_Event) {
-	app := cast(^Process_Monitor)state
-	process_monitor_scroll(app, event)
-	alicorn.invalidate_root(rt, "process monitor scroll")
-}
-
 process_monitor_on_tick :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	app := cast(^Process_Monitor)state
 	if app.input_debug && rt.stats.pointer_events != app.last_pointer_events {
@@ -566,7 +536,7 @@ process_monitor_on_tick :: proc(state: rawptr, rt: ^alicorn.Runtime) {
 	}
 }
 
-process_monitor_handle_key :: proc(app: ^Process_Monitor, key: Monitor_Key) -> bool {
+process_monitor_handle_key :: proc(app: ^Process_Monitor, rt: ^alicorn.Runtime, key: Monitor_Key) -> bool {
 	switch key {
 	case .Sort_CPU:
 		if app.sort == .CPU { app.sort_descending = !app.sort_descending } else { app.sort = .CPU; app.sort_descending = true }
@@ -585,42 +555,17 @@ process_monitor_handle_key :: proc(app: ^Process_Monitor, key: Monitor_Key) -> b
 		if selected_position < 0 { selected_position = 0 }
 		delta := 1
 		if key == .Up { delta = -1 }
-		if key == .Page_Up { delta = -8 }
-		if key == .Page_Down { delta = 8 }
+		page := max(1, int(alicorn.scroll_region_state(rt, app.scroll_node).viewport_height/24)-1)
+		if key == .Page_Up { delta = -page }
+		if key == .Page_Down { delta = page }
 		next := selected_position + delta
 		if next < 0 { next = 0 }
-		if next >= len(app.visible) { next = len(app.visible)-1 }
-		app.selected = app.rows[app.visible[next]].key
-		app.has_selected = true
-		row_height := app.row_height
-		if row_height <= 0 { row_height = 24 }
-		viewport_height := app.list_viewport_height
-		if viewport_height < row_height { viewport_height = row_height }
-		target_y := f32(next) * row_height
-		if target_y < app.scroll_y {
-			app.scroll_y = target_y
-		} else if target_y+row_height > app.scroll_y+viewport_height {
-			app.scroll_y = target_y + row_height - viewport_height
-		}
-		metrics := alicorn.virtual_list_metrics(len(app.visible), app.scroll_y, viewport_height, row_height)
-		app.scroll_y = metrics.offset_y
+			if next >= len(app.visible) { next = len(app.visible)-1 }
+			app.selected = app.rows[app.visible[next]].key
+			app.has_selected = true
+			_ = alicorn.virtual_list_ensure_visible(rt, app.scroll_node, next, "process selection visibility")
 	case:
 		return false
 	}
 	return true
-}
-
-process_monitor_scroll :: proc(app: ^Process_Monitor, event: alicorn.Scroll_Event) {
-	row_height := app.row_height
-	if row_height <= 0 { row_height = 24 }
-	viewport_height := app.list_viewport_height
-	if viewport_height < row_height { viewport_height = row_height }
-	// SDL's precise wheel delta is expressed in wheel units. Three lines per
-	// wheel notch is the normal Windows convention; touchpads can provide a
-	// fractional value and retain smooth movement through this same path.
-	delta_y := event.delta_y
-	if event.ticks_y != 0 { delta_y = f32(event.ticks_y) * 3 }
-	app.scroll_y -= delta_y * row_height
-	metrics := alicorn.virtual_list_metrics(len(app.visible), app.scroll_y, viewport_height, row_height)
-	app.scroll_y = metrics.offset_y
 }

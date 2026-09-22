@@ -15,6 +15,7 @@ monitor_key_from_host :: proc(key: host.Application_Key) -> (Monitor_Key, bool) 
 	case .Command_2: return .Sort_Memory, true
 	case .Command_3: return .Sort_Name, true
 	case .Toggle: return .Toggle_Pause, true
+	case .Open_Repository: return {}, false
 	}
 	return {}, false
 }
@@ -23,7 +24,7 @@ monitor_on_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicatio
 	app := cast(^Process_Monitor)state
 	monitor_key, ok := monitor_key_from_host(key)
 	if !ok { return false }
-	return process_monitor_handle_key(app, monitor_key)
+	return process_monitor_handle_key(app, rt, monitor_key)
 }
 
 main :: proc() {
@@ -37,7 +38,7 @@ main :: proc() {
 		build = process_monitor_build,
 		on_text_change = process_monitor_on_text_change,
 		on_key = monitor_on_key,
-		on_scroll = process_monitor_on_scroll,
+		on_scroll = nil,
 		on_tick = process_monitor_on_tick,
 	}
 	smoke := false
