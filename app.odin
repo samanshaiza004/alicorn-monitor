@@ -370,7 +370,9 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	alicorn.container_end(&ui)
 	surface_width := graph_width - 58
 	if surface_width < 160 { surface_width = 160 }
-	surface := alicorn.gpu_surface(&ui, "cpu-history", app.graph_revision, alicorn.Rect{0, 0, surface_width, 150}, int(surface_width*dpi_scale), int(150*dpi_scale), dpi_scale)
+	// The description revision tracks surface configuration only. High-frequency
+	// sample changes are published independently through gpu_surface_update.
+	surface := alicorn.gpu_surface(&ui, "cpu-history", 0, alicorn.Rect{0, 0, surface_width, 150}, int(surface_width*dpi_scale), int(150*dpi_scale), dpi_scale)
 	alicorn.container_end(&ui)
 	alicorn.container_end(&ui)
 	alicorn.text(&ui, fmt.tprintf("Filter (%d matching)", len(app.visible)), style=alicorn.layout_style(height=MONITOR_FILTER_LABEL_HEIGHT))
@@ -394,10 +396,10 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	table_body_width := logical_width - 24
 	if table_body_width < 180 { table_body_width = 180 }
 	if table_body_width > 1000 { table_body_width = 1000 }
-	table_scrollbar_width: f32 = 14
-	table_list_width := table_body_width - table_scrollbar_width - 6
+	table_list_width := table_body_width - 2*MONITOR_TABLE_BODY_PADDING - alicorn.SCROLLBAR_THICKNESS
 	if table_list_width < 120 { table_list_width = 120 }
-	alicorn.container_begin(&ui, .Container, label="process-table-header", style=alicorn.layout_style(.Row, width=table_list_width, height=MONITOR_TABLE_HEADER_HEIGHT), color=alicorn.Color{0.08, 0.11, 0.16, 1})
+	header_width := table_body_width - alicorn.SCROLLBAR_THICKNESS
+	alicorn.container_begin(&ui, .Container, label="process-table-header", style=alicorn.layout_style(.Row, width=header_width, height=MONITOR_TABLE_HEADER_HEIGHT, padding=MONITOR_TABLE_BODY_PADDING), color=alicorn.Color{0.08, 0.11, 0.16, 1})
 	alicorn.text(&ui, "", style=alicorn.layout_style(.Row, width=TABLE_MARKER_WIDTH, height=MONITOR_TABLE_HEADER_HEIGHT))
 	alicorn.text(&ui, "PID", style=alicorn.layout_style(.Row, width=TABLE_PID_WIDTH, height=MONITOR_TABLE_HEADER_HEIGHT))
 	alicorn.text(&ui, "PROCESS", style=alicorn.layout_style(.Row, height=MONITOR_TABLE_HEADER_HEIGHT, grow=1))
@@ -439,25 +441,6 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 		alicorn.component_end(&ui)
 	}
 	alicorn.virtual_list_end(&ui, process_list)
-	content_height := process_list.scroll.content_height
-	list_height := process_list.scroll.viewport_height
-	thumb_height := list_height
-	if content_height > list_height && content_height > 0 {
-		thumb_height = list_height * list_height / content_height
-		if thumb_height < row_height { thumb_height = row_height }
-		if thumb_height > list_height { thumb_height = list_height }
-	}
-	thumb_travel := list_height - thumb_height
-	thumb_y: f32 = 0
-	if process_list.scroll.max_scroll_y > 0 { thumb_y = thumb_travel * process_list.scroll.offset_y / process_list.scroll.max_scroll_y }
-	alicorn.container_begin(&ui, .Container, label="process-scrollbar", style=alicorn.layout_style(width=table_scrollbar_width, grow=1, clip=true), color=alicorn.Color{0.045, 0.065, 0.10, 1})
-	if thumb_y > 0 {
-		alicorn.container_begin(&ui, .Container, label="scrollbar-spacer", style=alicorn.layout_style(width=table_scrollbar_width, height=thumb_y))
-		alicorn.container_end(&ui)
-	}
-	alicorn.container_begin(&ui, .Container, label="scrollbar-thumb", style=alicorn.layout_style(width=table_scrollbar_width, height=thumb_height), color=alicorn.Color{0.20, 0.42, 0.68, 1})
-	alicorn.container_end(&ui)
-	alicorn.container_end(&ui)
 	alicorn.container_end(&ui)
 	alicorn.end_frame(&ui)
 	if controls_changed { alicorn.invalidate_root(rt, "process monitor control changed") }
