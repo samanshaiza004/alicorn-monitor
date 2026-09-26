@@ -58,13 +58,15 @@ semantic text commands; they are deliberately not reimplemented in this app.
 
 Diagnostics counters are host-owned. When `-Diagnostics` is used, inspect
 `out\diagnostics\diagnostics.json` for timing, GPU, retained-node, display,
-and text counters; the monitor has no public callback field for those values.
+text, and scheduled-wake counters. The live summary separates the 250 ms CPU
+and memory refresh from the 1 s process-table refresh. Opportunistic table work
+waits for 150 ms of keyboard/pointer quiet; its run count, deferrals, and worst
+deadline lateness are shown in the window and diagnostic capture.
 
-The live summary also shows an app-owned `Host ticks` estimate. It measures
-the cadence of the native host's public `on_tick` callback; it is not a full
-frame-rate or GPU-time measurement. The graph header and chart body use
-explicit colors because the current public container API paints colored
-containers, including layout-only containers.
+Pausing cancels both scheduled deadlines. With no scheduled work, Monitor uses
+the host's event wait rather than a display-cadence callback. The graph header
+and chart body use explicit colors because the current public container API
+paints colored containers, including layout-only containers.
 
 The table reports `WS` (working set) and `PRIVATE` (private committed memory)
 separately. A large working set can include shared pages from SDL, the Odin

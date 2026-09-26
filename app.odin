@@ -5,6 +5,7 @@ import "core:mem"
 import "core:strings"
 import "core:time"
 import alicorn "vendor/alicorn/runtime"
+import host "vendor/alicorn/native/sdl_gpu"
 
 // Process_Key deliberately includes the creation timestamp. Windows may
 // recycle a PID; PID alone is not a safe retained identity.
@@ -75,6 +76,7 @@ Process_Monitor :: struct {
 	scratch_arena:        ^mem.Dynamic_Arena,
 	scratch_allocator:    mem.Allocator,
 	filter:            string,
+	scheduler:         host.Application_Scheduler,
 	rows:              [dynamic]Process_Record,
 	visible:           [dynamic]int,
 	previous_cpu:      map[Process_Key]u64,
@@ -104,6 +106,7 @@ Process_Monitor :: struct {
 	disable_sampler:   bool,
 	disable_surface:   bool,
 	sample_count:      u64,
+	process_sample_count: u64,
 	query_failures:    int,
 	queried_this_sample: int,
 	unavailable_this_sample: int,
@@ -111,11 +114,7 @@ Process_Monitor :: struct {
 	last_pointer_events: u64,
 	qpc_frequency:     u64,
 	last_qpc:          u64,
-	sample_tick:       time.Tick,
-	tick_count:        u64,
-	last_tick_time:    time.Time,
-	tick_time_valid:   bool,
-	tick_hz:           f32,
+	process_sample_tick: time.Tick,
 	filter_node:       alicorn.Node_ID,
 	scroll_node:       alicorn.Node_ID,
 	surface_node:      alicorn.Node_ID,
@@ -163,9 +162,8 @@ process_monitor_scratch_reset :: proc(app: ^Process_Monitor) {
 	if app.scratch_arena != nil { mem.dynamic_arena_reset(app.scratch_arena) }
 }
 
-// Graph history advances only when a fresh process sample is available. The
-// host may tick at display cadence, but the monitor should not manufacture
-// repeated points or GPU submissions between samples.
+// Graph history advances only when a fresh frequent system sample is available;
+// the monitor does not manufacture repeated points between scheduled samples.
 process_monitor_graph_tick :: proc(app: ^Process_Monitor) {
 	if len(app.cpu_history) == 0 {
 		for i := 0; i < 512; i += 1 { append(&app.cpu_history, 0) }
@@ -336,8 +334,16 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	alicorn.text(&ui, fmt.tprintf("CPU %.1f%%", app.cpu_percent), style=alicorn.layout_style(.Row, width=SUMMARY_CPU_WIDTH, height=28))
 	alicorn.text(&ui, fmt.tprintf("%s %s / %s", system_memory_label(), format_bytes(app.memory_used), format_bytes(app.memory_total)), style=alicorn.layout_style(.Row, width=SUMMARY_MEMORY_WIDTH, height=28))
 	alicorn.text(&ui, process_monitor_process_summary(app), style=alicorn.layout_style(.Row, width=SUMMARY_PROCESSES_WIDTH, height=28))
-	alicorn.text(&ui, fmt.tprintf("Host ticks %.1f Hz", app.tick_hz), style=alicorn.layout_style(.Row, width=170, height=28))
+	alicorn.text(&ui, "CPU 250ms · table 1s", style=alicorn.layout_style(.Row, width=200, height=28))
 	alicorn.container_end(&ui)
+	scheduler_stats := host.application_scheduler_stats(app.scheduler)
+	alicorn.text(&ui, fmt.tprintf(
+		"Scheduler · frequent %d · opportunistic %d · deferred %d · max late %.1f ms",
+		scheduler_stats.frequent_wakes,
+		scheduler_stats.opportunistic_wakes,
+		scheduler_stats.opportunistic_deferrals,
+		f64(scheduler_stats.maximum_lateness_ns)/1_000_000,
+	), style=alicorn.layout_style(height=18))
 
 	graph_width := logical_width - 24
 	if graph_width < 260 { graph_width = 260 }
@@ -379,7 +385,10 @@ process_monitor_render :: proc(rt: ^alicorn.Runtime, app: ^Process_Monitor, logi
 	if clicked_cpu { app.sort = .CPU; app.sort_descending = !app.sort_descending }
 	if clicked_memory { app.sort = .Memory; app.sort_descending = !app.sort_descending }
 	if clicked_name { app.sort = .Name; app.sort_descending = !app.sort_descending }
-	if clicked_pause { app.paused = !app.paused }
+	if clicked_pause {
+		app.paused = !app.paused
+		process_monitor_schedule_sampling(app, resume=!app.paused)
+	}
 	alicorn.container_end(&ui)
 
 	table_body_width := logical_width - 24
@@ -494,45 +503,79 @@ process_monitor_on_text_change :: proc(state: rawptr, rt: ^alicorn.Runtime, chan
 	if change.changed { alicorn.invalidate_root(rt, "process monitor filter changed") }
 }
 
-process_monitor_on_tick :: proc(state: rawptr, rt: ^alicorn.Runtime) {
+MONITOR_FREQUENT_INTERVAL_NS :: u64(250_000_000)
+MONITOR_OPPORTUNISTIC_INTERVAL_NS :: u64(1_000_000_000)
+MONITOR_OPPORTUNISTIC_INITIAL_NS :: u64(500_000_000)
+
+process_monitor_has_sampler :: proc() -> bool {
+	when ODIN_OS == .Windows || ODIN_OS == .Darwin { return true }
+	return false
+}
+
+process_monitor_cancel_sampling :: proc(app: ^Process_Monitor) {
+	_ = host.application_cancel_scheduled_wake(app.scheduler, .Frequent)
+	_ = host.application_cancel_scheduled_wake(app.scheduler, .Opportunistic)
+}
+
+process_monitor_schedule_sampling :: proc(app: ^Process_Monitor, resume: bool = false) {
+	process_monitor_cancel_sampling(app)
+	if app.paused || app.disable_sampler || !process_monitor_has_sampler() { return }
+	frequent_delay := MONITOR_FREQUENT_INTERVAL_NS
+	opportunistic_delay := MONITOR_OPPORTUNISTIC_INTERVAL_NS
+	if resume {
+		frequent_delay = 0
+		opportunistic_delay = 100_000_000
+	} else if app.sample_count == 0 {
+		frequent_delay = 0
+		opportunistic_delay = MONITOR_OPPORTUNISTIC_INITIAL_NS
+	}
+	_ = host.application_schedule_after(app.scheduler, .Frequent, frequent_delay)
+	_ = host.application_schedule_after(app.scheduler, .Opportunistic, opportunistic_delay)
+}
+
+process_monitor_on_services :: proc(state: rawptr, services: host.Application_Services) {
 	app := cast(^Process_Monitor)state
+	app.scheduler = services.scheduler
+	process_monitor_schedule_sampling(app)
+}
+
+process_monitor_publish_frequent_sample :: proc(app: ^Process_Monitor, rt: ^alicorn.Runtime, sampled: bool) {
+	if !sampled { return }
+	app.sample_count += 1
+	process_monitor_graph_tick(app)
+	if app.surface_node != 0 && !app.disable_surface {
+		_ = alicorn.gpu_surface_update(rt, app.surface_node, app.graph_revision, app.cpu_history[:])
+	}
+	alicorn.invalidate_root(rt, "frequent process monitor sample")
+}
+
+process_monitor_on_scheduled_wake :: proc(state: rawptr, rt: ^alicorn.Runtime, class: host.Scheduled_Wake_Class) {
+	app := cast(^Process_Monitor)state
+	if app.paused || app.disable_sampler || !process_monitor_has_sampler() { return }
 	if app.input_debug && rt.stats.pointer_events != app.last_pointer_events {
 		fmt.println("monitor_input", "pointer_events", rt.stats.pointer_events, "focused", rt.focused, "selected", rt.selected)
 		app.last_pointer_events = rt.stats.pointer_events
 	}
-	app.tick_count += 1
-	now := time.now()
-	if app.tick_time_valid {
-		delta_ns := time.duration_nanoseconds(time.diff(app.last_tick_time, now))
-		if delta_ns > 0 {
-			instant_hz := f32(1e9 / f64(delta_ns))
-			if app.tick_hz == 0 {
-				app.tick_hz = instant_hz
-			} else {
-				app.tick_hz = app.tick_hz*0.9 + instant_hz*0.1
-			}
-		}
-	}
-	app.last_tick_time = now
-	app.tick_time_valid = true
-	if app.paused { return }
-	if app.disable_sampler { return }
-	// The host ticks at display cadence, but process data and graph history only
-	// change when a new sample is available. This keeps the monitor's GPU work
-	// proportional to information changes rather than repainting duplicates.
-	if app.sample_count == 0 || app.tick_count % 15 == 0 {
+	switch class {
+	case .Frequent:
 		previous_temp_allocator := context.temp_allocator
 		context.temp_allocator = app.scratch_allocator
-		sampled := process_monitor_sample(app)
+		sampled := process_monitor_sample_system(app)
+		context.temp_allocator = previous_temp_allocator
+		process_monitor_scratch_reset(app)
+		process_monitor_publish_frequent_sample(app, rt, sampled)
+		_ = host.application_schedule_after(app.scheduler, .Frequent, MONITOR_FREQUENT_INTERVAL_NS)
+	case .Opportunistic:
+		previous_temp_allocator := context.temp_allocator
+		context.temp_allocator = app.scratch_allocator
+		sampled := process_monitor_sample_processes(app)
 		context.temp_allocator = previous_temp_allocator
 		process_monitor_scratch_reset(app)
 		if sampled {
-			process_monitor_graph_tick(app)
-			if app.surface_node != 0 && !app.disable_surface {
-				_ = alicorn.gpu_surface_update(rt, app.surface_node, app.graph_revision, app.cpu_history[:])
-			}
-			alicorn.invalidate_root(rt, "process monitor sample")
+			app.process_sample_count += 1
+			alicorn.invalidate_root(rt, "opportunistic process table refresh")
 		}
+		_ = host.application_schedule_after(app.scheduler, .Opportunistic, MONITOR_OPPORTUNISTIC_INTERVAL_NS)
 	}
 }
 

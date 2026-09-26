@@ -148,16 +148,16 @@ process_monitor_system_cpu :: proc(app: ^Process_Monitor) -> (percent: f32, ok: 
 	return
 }
 
-process_monitor_system_memory :: proc(app: ^Process_Monitor) {
+process_monitor_system_memory :: proc(app: ^Process_Monitor) -> bool {
 	total: u64
-	if !unix.sysctlbyname("hw.memsize", &total) { return }
+	if !unix.sysctlbyname("hw.memsize", &total) { return false }
 
 	page_size: uintptr
-	if host_page_size(mach_host_self(), &page_size) != 0 || page_size == 0 { return }
+	if host_page_size(mach_host_self(), &page_size) != 0 || page_size == 0 { return false }
 
 	stats: Darwin_VM_Statistics64
 	count := c.uint(size_of(stats) / size_of(c.int))
-	if host_statistics64(mach_host_self(), DARWIN_HOST_VM_INFO64, rawptr(&stats), &count) != 0 { return }
+	if host_statistics64(mach_host_self(), DARWIN_HOST_VM_INFO64, rawptr(&stats), &count) != 0 { return false }
 
 	free_bytes := u64(stats.free_count) * u64(page_size)
 	if free_bytes > total { free_bytes = total }
@@ -166,10 +166,23 @@ process_monitor_system_memory :: proc(app: ^Process_Monitor) {
 	// formula.
 	app.memory_total = total
 	app.memory_used = total - free_bytes
+	return true
 }
 
-process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
-	elapsed := time.tick_lap_time(&app.sample_tick)
+process_monitor_sample_system :: proc(app: ^Process_Monitor) -> bool {
+	sampled := false
+	if system_cpu, system_ok := process_monitor_system_cpu(app); system_ok {
+		app.cpu_percent = system_cpu
+		sampled = true
+	} else if !app.system_times_valid {
+		app.cpu_percent = 0
+	}
+	if process_monitor_system_memory(app) { sampled = true }
+	return sampled || app.sample_count == 0
+}
+
+process_monitor_sample_processes :: proc(app: ^Process_Monitor) -> bool {
+	elapsed := time.tick_lap_time(&app.process_sample_tick)
 	app.queried_this_sample = 0
 	app.unavailable_this_sample = 0
 	// The list is a point-in-time snapshot; process churn between enumeration
@@ -230,14 +243,13 @@ process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
 	delete(app.previous_cpu)
 	app.previous_cpu = next_cpu
 	app.process_revision += 1
-	app.sample_count += 1
-	if system_cpu, system_ok := process_monitor_system_cpu(app); system_ok {
-		app.cpu_percent = system_cpu
-	} else if !app.system_times_valid {
-		app.cpu_percent = 0
-	}
-	process_monitor_system_memory(app)
 	return true
+}
+
+process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
+	system_sampled := process_monitor_sample_system(app)
+	process_sampled := process_monitor_sample_processes(app)
+	return system_sampled || process_sampled
 }
 
 process_monitor_sampler_check :: proc() -> bool {

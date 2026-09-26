@@ -17,6 +17,8 @@ The current screen combines:
 - Windows process sampling keyed by PID plus creation time;
 - continuous fixed-height scrolling with a proportional position indicator;
 - Darwin process sampling keyed by PID plus `ri_proc_start_abstime`.
+- a 250 ms system-summary/graph refresh and a 1 s opportunistic process-table
+  refresh; table work yields briefly after keyboard or pointer activity.
 
 Keyboard-only operation is part of the dogfood contract: `Tab`/`Shift+Tab`
 traverse active controls, while `Enter`/`Space` activate a focused button.

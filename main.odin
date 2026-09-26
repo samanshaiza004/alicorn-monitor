@@ -16,6 +16,7 @@ monitor_key_from_host :: proc(key: host.Application_Key) -> (Monitor_Key, bool) 
 	case .Command_3: return .Sort_Name, true
 	case .Toggle: return .Toggle_Pause, true
 	case .Open_Repository: return {}, false
+	case .Home, .Fit_Selection, .Open_Command_Palette, .Escape, .Return: return {}, false
 	}
 	return {}, false
 }
@@ -24,7 +25,11 @@ monitor_on_key :: proc(state: rawptr, rt: ^alicorn.Runtime, key: host.Applicatio
 	app := cast(^Process_Monitor)state
 	monitor_key, ok := monitor_key_from_host(key)
 	if !ok { return false }
-	return process_monitor_handle_key(app, rt, monitor_key)
+	handled := process_monitor_handle_key(app, rt, monitor_key)
+	if handled && monitor_key == .Toggle_Pause {
+		process_monitor_schedule_sampling(app, resume=!app.paused)
+	}
+	return handled
 }
 
 main :: proc() {
@@ -39,7 +44,8 @@ main :: proc() {
 		on_text_change = process_monitor_on_text_change,
 		on_key = monitor_on_key,
 		on_scroll = nil,
-		on_tick = process_monitor_on_tick,
+		on_services = process_monitor_on_services,
+		on_scheduled_wake = process_monitor_on_scheduled_wake,
 	}
 	smoke := false
 	sample_check := false
@@ -83,6 +89,7 @@ main :: proc() {
 		"identity_keys", len(app.previous_cpu),
 		"queried_this_sample", app.queried_this_sample,
 		"unavailable_this_sample", app.unavailable_this_sample,
+		"process_samples", app.process_sample_count,
 		"surface_updates", app.graph_revision,
 		"surface_frames", app.graph_revision,
 		"graph_points", len(app.cpu_history),

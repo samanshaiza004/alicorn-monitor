@@ -3,9 +3,47 @@ package main
 import "core:fmt"
 import "core:strings"
 import alicorn "vendor/alicorn/runtime"
+import host "vendor/alicorn/native/sdl_gpu"
 
 Dogfood_Test_State :: struct {
 	failures: int,
+}
+
+Dogfood_Fake_Scheduler :: struct {
+	delays_ns: [2]u64,
+	pending:   [2]bool,
+	scheduled: u64,
+	cancelled: u64,
+}
+
+dogfood_scheduler_index :: proc(class: host.Scheduled_Wake_Class) -> int {
+	return 0 if class == .Frequent else 1
+}
+
+dogfood_scheduler_schedule :: proc(data: rawptr, class: host.Scheduled_Wake_Class, delay_ns: u64) -> bool {
+	state := cast(^Dogfood_Fake_Scheduler)data
+	index := dogfood_scheduler_index(class)
+	state.delays_ns[index] = delay_ns
+	state.pending[index] = true
+	state.scheduled += 1
+	return true
+}
+
+dogfood_scheduler_cancel :: proc(data: rawptr, class: host.Scheduled_Wake_Class) -> bool {
+	state := cast(^Dogfood_Fake_Scheduler)data
+	index := dogfood_scheduler_index(class)
+	state.pending[index] = false
+	state.cancelled += 1
+	return true
+}
+
+dogfood_scheduler_stats :: proc(data: rawptr) -> host.Application_Scheduler_Stats {
+	state := cast(^Dogfood_Fake_Scheduler)data
+	return host.Application_Scheduler_Stats{
+		scheduled=state.scheduled,
+		frequent_pending=state.pending[0],
+		opportunistic_pending=state.pending[1],
+	}
 }
 
 dogfood_expect :: proc(state: ^Dogfood_Test_State, condition: bool, message: string) {
@@ -46,6 +84,47 @@ dogfood_node_by_label :: proc(rt: ^alicorn.Runtime, label: string) -> ^alicorn.N
 // as the native host would after the callback returns.
 process_monitor_run_dogfood_tests :: proc() -> bool {
 	state := Dogfood_Test_State{}
+	scheduler_app := process_monitor_new()
+	defer process_monitor_destroy(&scheduler_app)
+	fake_scheduler := Dogfood_Fake_Scheduler{}
+	scheduler_app.scheduler = host.Application_Scheduler{
+		data=rawptr(&fake_scheduler),
+		schedule=dogfood_scheduler_schedule,
+		cancel=dogfood_scheduler_cancel,
+		read_stats=dogfood_scheduler_stats,
+	}
+	process_monitor_schedule_sampling(&scheduler_app)
+	dogfood_expect(&state,
+		fake_scheduler.pending[0] && fake_scheduler.delays_ns[0] == 0 &&
+			fake_scheduler.pending[1] && fake_scheduler.delays_ns[1] == MONITOR_OPPORTUNISTIC_INITIAL_NS,
+		"startup should schedule immediate frequent work and delayed table work")
+	scheduler_app.paused = true
+	process_monitor_schedule_sampling(&scheduler_app)
+	dogfood_expect(&state, !fake_scheduler.pending[0] && !fake_scheduler.pending[1], "pause should cancel every scheduled wake")
+	scheduler_app.paused = false
+	process_monitor_schedule_sampling(&scheduler_app, resume=true)
+	dogfood_expect(&state,
+		fake_scheduler.pending[0] && fake_scheduler.delays_ns[0] == 0 &&
+			fake_scheduler.pending[1] && fake_scheduler.delays_ns[1] == 100_000_000,
+		"resume should promptly refresh both fidelity tiers")
+
+	fidelity_app := process_monitor_new()
+	defer process_monitor_destroy(&fidelity_app)
+	dogfood_append_row(&fidelity_app, 1, "alpha process")
+	dogfood_append_row(&fidelity_app, 2, "beta process")
+	fidelity_app.process_revision = 1
+	process_monitor_prepare_visible(&fidelity_app)
+	projection_rebuilds_before_graph := fidelity_app.projection_rebuilds
+	fidelity_rt := alicorn.new_runtime(alicorn.Rect{0, 0, 640, 360})
+	defer alicorn.destroy_runtime(&fidelity_rt)
+	fidelity_app.cpu_percent = 42
+	process_monitor_publish_frequent_sample(&fidelity_app, &fidelity_rt, true)
+	process_monitor_prepare_visible(&fidelity_app)
+	dogfood_expect(&state,
+		fidelity_app.graph_revision == 1 && fidelity_app.process_revision == 1 &&
+			fidelity_app.projection_rebuilds == projection_rebuilds_before_graph,
+		"frequent graph refresh must not force the process table projection to rebuild")
+
 	scroll_app := process_monitor_new()
 	defer process_monitor_destroy(&scroll_app)
 	scroll_rt := alicorn.new_runtime(alicorn.Rect{0, 0, 960, 720})

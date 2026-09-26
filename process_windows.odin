@@ -66,13 +66,28 @@ process_monitor_system_cpu :: proc(app: ^Process_Monitor) -> (percent: f32, ok: 
 	return
 }
 
+process_monitor_sample_system :: proc(app: ^Process_Monitor) -> bool {
+	sampled := false
+	if system_cpu, ok := process_monitor_system_cpu(app); ok {
+		app.cpu_percent = system_cpu
+		sampled = true
+	}
+	memory := windows.MEMORYSTATUSEX{dwLength=size_of(windows.MEMORYSTATUSEX)}
+	if windows.GlobalMemoryStatusEx(&memory) {
+		app.memory_total = u64(memory.ullTotalPhys)
+		app.memory_used = app.memory_total - u64(memory.ullAvailPhys)
+		sampled = true
+	}
+	return sampled || app.sample_count == 0
+}
+
 qpc_value :: proc() -> u64 {
 	value: windows.LARGE_INTEGER
 	if !windows.QueryPerformanceCounter(&value) { return 0 }
 	return u64(i64(value))
 }
 
-process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
+process_monitor_sample_processes :: proc(app: ^Process_Monitor) -> bool {
 	if app.qpc_frequency == 0 {
 		frequency: windows.LARGE_INTEGER
 		if !windows.QueryPerformanceFrequency(&frequency) { return false }
@@ -102,7 +117,6 @@ process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
 	status := windows.Process32FirstW(snapshot, &entry)
 	logical_processors := os.get_processor_core_count()
 	if logical_processors <= 0 { logical_processors = 1 }
-	total_cpu: f32 = 0
 	for status {
 		pid := entry.th32ProcessID
 		handle := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
@@ -132,7 +146,6 @@ process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
 				append(&app.rows, row)
 				app.queried_this_sample += 1
 				next_cpu[key] = cpu_time
-				total_cpu += row.cpu_percent
 			} else {
 				app.query_failures += 1
 				app.unavailable_this_sample += 1
@@ -147,17 +160,11 @@ process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
 	delete(app.previous_cpu)
 	app.previous_cpu = next_cpu
 	app.process_revision += 1
-	app.sample_count += 1
-	if system_cpu, system_ok := process_monitor_system_cpu(app); system_ok {
-		app.cpu_percent = system_cpu
-	} else {
-		app.cpu_percent = total_cpu
-	}
-	if app.cpu_percent > 100 { app.cpu_percent = 100 }
-	memory := windows.MEMORYSTATUSEX{dwLength=size_of(windows.MEMORYSTATUSEX)}
-	if windows.GlobalMemoryStatusEx(&memory) {
-		app.memory_total = u64(memory.ullTotalPhys)
-		app.memory_used = app.memory_total - u64(memory.ullAvailPhys)
-	}
 	return true
+}
+
+process_monitor_sample :: proc(app: ^Process_Monitor) -> bool {
+	system_sampled := process_monitor_sample_system(app)
+	process_sampled := process_monitor_sample_processes(app)
+	return system_sampled || process_sampled
 }
