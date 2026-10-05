@@ -78,6 +78,63 @@ dogfood_node_by_label :: proc(rt: ^alicorn.Runtime, label: string) -> ^alicorn.N
 	return nil
 }
 
+dogfood_expect_semantic_surface :: proc(
+	state: ^Dogfood_Test_State,
+	rt: ^alicorn.Runtime,
+	app: ^Process_Monitor,
+	node: ^alicorn.Node,
+	role: alicorn.Style_Extension_Color_Role_ID,
+	expected: alicorn.Color,
+	height: f32,
+	message: string,
+) {
+	if node == nil {
+		dogfood_expect(state, false, message)
+		return
+	}
+	style, style_found := rt.semantic_surfaces[node.id]
+	role_matches := false
+	switch value in style.role {
+	case alicorn.Style_Color_Role:
+	case alicorn.Style_Extension_Color_Role_ID:
+		role_matches = value == role
+	}
+	resolved, resolved_ok := alicorn.style_extension_color(rt, app.style_theme, role)
+	fill_ok := false
+	fill := alicorn.Color{}
+	if len(node.paint) > 0 { fill, fill_ok = alicorn.paint_surface_color(node.paint[0]) }
+	paint_ok := len(node.paint) == 1 && alicorn.paint_command_is_surface(node.paint[0])
+	material_ok := false
+	if paint_ok {
+		payload, payload_ok := node.paint[0].payload.(alicorn.Surface_Paint)
+		material_ok = payload_ok && payload.material == app.surface_material && payload.physical_height == height
+	}
+	dogfood_expect(state,
+		style_found && style.defined && role_matches && node.style_environment.theme == app.style_theme &&
+			resolved_ok && resolved == expected && fill_ok && fill == expected && material_ok,
+		message)
+}
+
+dogfood_expect_row_recipe :: proc(state: ^Dogfood_Test_State, rt: ^alicorn.Runtime, name: string, selected: bool) {
+	name_node := dogfood_node_by_label(rt, name)
+	if name_node == nil {
+		dogfood_expect(state, false, "visible process row should retain its selectable name cell")
+		return
+	}
+	count := 0
+	all_quiet := true
+	all_selected := true
+	for _, node in rt.nodes {
+		if node.parent == name_node.parent && node.kind == .Button {
+			count += 1
+			all_quiet = all_quiet && node.button_variant == .Quiet
+			all_selected = all_selected && node.selected == selected
+		}
+	}
+	dogfood_expect(state, count == 6 && all_quiet && all_selected,
+		"process-row cells should use Quiet while preserving row selection")
+}
+
 // process_monitor_run_dogfood_tests exercises the monitor's external side of
 // the public text-editing boundary. The callback clones the borrowed runtime
 // text, while this direct test call releases each returned product explicitly
@@ -135,13 +192,13 @@ process_monitor_run_dogfood_tests :: proc() -> bool {
 		surface_samples[i] = f32(i % 13) / 13
 	}
 	dogfood_expect(&state,
-		alicorn.gpu_surface_update(&surface_rt, surface_app.surface_node, 1, surface_samples[:]),
+		alicorn.gpu_surface_update_versioned(&surface_rt, surface_app.surface_node, alicorn.GPU_Surface_Update_Revision(1), surface_samples[:]),
 		"frequent graph data should publish through the retained surface update path")
 	alicorn.invalidate_root(&surface_rt, "unrelated process summary refresh")
 	process_monitor_build(rawptr(&surface_app), &surface_rt, 960, 720, 1)
 	surface_node := surface_rt.nodes[surface_app.surface_node]
 	dogfood_expect(&state,
-		surface_node.surface_revision == 1 && len(surface_node.surface_samples) == len(surface_samples),
+		u64(surface_node.surface_payload_revision) == 1 && len(surface_node.surface_samples) == len(surface_samples),
 		"an unrelated root rebuild must preserve the latest GPU surface samples")
 
 	scroll_app := process_monitor_new()
@@ -202,8 +259,41 @@ process_monitor_run_dogfood_tests :: proc() -> bool {
 	for i := 0; i < 100; i += 1 {
 		dogfood_append_row(&layout_app, u32(i+1), fmt.tprintf("process %d", i+1))
 	}
+	layout_app.selected = layout_app.rows[len(layout_app.rows)-1].key
+	layout_app.has_selected = true
 	layout_app.process_revision = 1
 	process_monitor_build(rawptr(&layout_app), &layout_rt, 960, 720, 1)
+	dogfood_expect_semantic_surface(&state, &layout_rt, &layout_app, dogfood_node_by_label(&layout_rt, "system-summary"), layout_app.summary_surface_role, alicorn.Color{0.08, 0.14, 0.24, 1}, 0.25, "summary surface should preserve its color while resolving semantic theme/material intent")
+	dogfood_expect_semantic_surface(&state, &layout_rt, &layout_app, dogfood_node_by_label(&layout_rt, "cpu-graph"), layout_app.graph_surface_role, alicorn.Color{0.055, 0.08, 0.13, 1}, 0.10, "graph surface should preserve its color and generic surface paint")
+	dogfood_expect_semantic_surface(&state, &layout_rt, &layout_app, dogfood_node_by_label(&layout_rt, "cpu-graph-header"), layout_app.graph_header_surface_role, alicorn.Color{0.07, 0.11, 0.18, 1}, 0.40, "graph header should resolve through its app theme role")
+	dogfood_expect_semantic_surface(&state, &layout_rt, &layout_app, dogfood_node_by_label(&layout_rt, "sort-controls"), layout_app.sort_surface_role, alicorn.Color{0.06, 0.09, 0.14, 1}, 0.15, "sort toolbar surface should resolve through its app theme role")
+	dogfood_expect_semantic_surface(&state, &layout_rt, &layout_app, dogfood_node_by_label(&layout_rt, "process-table-header"), layout_app.table_header_surface_role, alicorn.Color{0.08, 0.11, 0.16, 1}, 0.18, "table header should preserve its color and semantic surface intent")
+	sort_cpu := dogfood_node_by_label(&layout_rt, "Sort CPU")
+	sort_memory := dogfood_node_by_label(&layout_rt, "Sort Memory")
+	dogfood_expect(&state, sort_cpu != nil && sort_cpu.button_variant == .Toolbar && sort_cpu.selected &&
+		sort_memory != nil && sort_memory.button_variant == .Toolbar && !sort_memory.selected,
+		"sort controls should retain Toolbar recipe intent and independent selected state")
+	dogfood_expect_row_recipe(&state, &layout_rt, "process 100", true)
+	dogfood_expect_row_recipe(&state, &layout_rt, "process 99", false)
+	field_cache, field_cache_found := layout_rt.computed_styles[layout_app.filter_node]
+	scroll_cache, scroll_cache_found := layout_rt.computed_styles[layout_app.scroll_node]
+	dogfood_expect(&state, field_cache_found && field_cache.family == .Text_Field && field_cache.provenance.theme == layout_app.style_theme,
+		"filter should use the theme-provided Text Field recipe under the registered app theme")
+	dogfood_expect(&state, scroll_cache_found && scroll_cache.family == .Scrollbar && scroll_cache.provenance.theme == layout_app.style_theme,
+		"virtual-list scrollbar should use the theme-provided Scrollbar recipe without app geometry")
+	style_theme_index := int(u32(layout_app.style_theme)) - 1
+	registered_theme := layout_rt.style_themes[style_theme_index]
+	dogfood_expect(&state,
+		registered_theme.text_field_recipe.defined && registered_theme.text_field_recipe.surface_role == .Surface &&
+			registered_theme.scrollbar_recipe.defined && registered_theme.scrollbar_recipe.track_role == .Scrollbar_Track &&
+			registered_theme.scrollbar_recipe.thumb_role == .Scrollbar_Thumb,
+		"the app theme should inherit Alicorn's complete Text Field and Scrollbar recipes")
+	theme_count := len(layout_rt.style_themes)
+	material_count := len(layout_rt.style_materials)
+	alicorn.invalidate_root(&layout_rt, "dogfood style registry stability")
+	process_monitor_build(rawptr(&layout_app), &layout_rt, 960, 720, 1)
+	dogfood_expect(&state, len(layout_rt.style_themes) == theme_count && len(layout_rt.style_materials) == material_count,
+		"Monitor should register its theme and material only once per Runtime")
 	root_bottom := layout_rt.viewport.y + layout_rt.viewport.h
 	table_body := dogfood_node_by_label(&layout_rt, "process-table-body")
 	table_header := dogfood_node_by_label(&layout_rt, "process-table-header")
@@ -233,7 +323,7 @@ process_monitor_run_dogfood_tests :: proc() -> bool {
 		sort_cpu := dogfood_node_by_label(&rt, "Sort CPU")
 		dogfood_expect(&state, sort_cpu != nil && alicorn.focus_traverse(&rt, .Next) == sort_cpu.id, "monitor Tab order must leave the filter at Sort CPU")
 		if sort_cpu != nil {
-			dogfood_expect(&state, alicorn.activate_focused(&rt), "monitor focused sort button must accept keyboard activation")
+			dogfood_expect(&state, alicorn.activate_focused(&rt, .Enter), "monitor focused sort button must accept keyboard activation")
 			process_monitor_build(rawptr(&app), &rt, 640, 360, 1)
 			dogfood_expect(&state, app.sort == .CPU && !app.sort_descending, "monitor keyboard activation must reach the sort command")
 		}

@@ -16,7 +16,11 @@ monitor_key_from_host :: proc(key: host.Application_Key) -> (Monitor_Key, bool) 
 	case .Command_3: return .Sort_Name, true
 	case .Toggle: return .Toggle_Pause, true
 	case .Open_Repository: return {}, false
-	case .Home, .Fit_Selection, .Open_Command_Palette, .Escape, .Return: return {}, false
+	case .Home, .End, .Left, .Right, .Fit_Selection, .Open_Command_Palette,
+		.Find, .Workspace_Search, .Context_Menu, .Workspace_Rename,
+		.Find_Next, .Find_Previous, .Zoom_In, .Zoom_Out, .Zoom_Reset,
+		.Escape, .Return:
+		return {}, false
 	}
 	return {}, false
 }
